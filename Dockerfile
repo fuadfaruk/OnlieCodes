@@ -1,6 +1,7 @@
 FROM eclipse-temurin:17-jdk-jammy
 
 ENV ANDROID_SDK_ROOT=/opt/android-sdk
+ENV ANDROID_HOME=/opt/android-sdk
 ENV GRADLE_HOME=/opt/gradle
 ENV PATH=${PATH}:${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${ANDROID_SDK_ROOT}/platform-tools:${GRADLE_HOME}/bin
 
