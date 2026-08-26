@@ -164,6 +164,7 @@ fun MainScreen(
                     value = dialogInputText,
                     onValueChange = { dialogInputText = it },
                     label = { Text("File Name") },
+                    supportingText = { Text("Include the extension, e.g. file1.txt") },
                     singleLine = true
                 )
             },

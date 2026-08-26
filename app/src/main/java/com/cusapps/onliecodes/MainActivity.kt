@@ -19,6 +19,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.lifecycleScope
+import android.webkit.MimeTypeMap
 import com.cusapps.onliecodes.model.OpenFile
 import com.cusapps.onliecodes.model.ProjectFile
 import com.cusapps.onliecodes.ui.MainScreen
@@ -236,9 +237,21 @@ class MainActivity : ComponentActivity() {
             } else {
                 rootTreeUri?.let { DocumentFile.fromTreeUri(this@MainActivity, it) }
             }
-            parentDoc?.createFile("text/plain", name)
+            parentDoc?.createFile(mimeTypeFor(name), name)
             refreshProjectTree()
         }
+    }
+
+    private fun mimeTypeFor(fileName: String): String {
+        val extension = fileName.substringAfterLast('.', "").lowercase()
+        if (extension.isNotEmpty()) {
+            val mimeMap = MimeTypeMap.getSingleton()
+            val mimeType = mimeMap.getMimeTypeFromExtension(extension)
+            if (mimeType != null && mimeMap.getExtensionFromMimeType(mimeType) == extension) {
+                return mimeType
+            }
+        }
+        return "application/x-unknown"
     }
 
     private fun createFolder(parent: ProjectFile?, name: String) {
