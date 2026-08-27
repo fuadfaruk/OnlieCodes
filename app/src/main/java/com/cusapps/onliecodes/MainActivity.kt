@@ -1,6 +1,7 @@
 package com.cusapps.onliecodes
 
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
@@ -50,6 +51,7 @@ class MainActivity : ComponentActivity() {
                 Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
             )
             rootTreeUri = uri
+            saveRootTreeUri(uri)
             val rootDoc = DocumentFile.fromTreeUri(this, uri)
             _projectName.value = rootDoc?.name ?: "Project"
             refreshProjectTree()
@@ -58,6 +60,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        restoreLastProject()
         setContent {
             OnlieCodesTheme {
                 val projectNameState = _projectName.collectAsState()
@@ -91,6 +94,27 @@ class MainActivity : ComponentActivity() {
                 )
             }
         }
+    }
+
+    private fun saveRootTreeUri(uri: Uri) {
+        getSharedPreferences("settings", Context.MODE_PRIVATE)
+            .edit()
+            .putString("last_project_uri", uri.toString())
+            .apply()
+    }
+
+    private fun restoreLastProject() {
+        val uriString = getSharedPreferences("settings", Context.MODE_PRIVATE)
+            .getString("last_project_uri", null) ?: return
+        val uri = Uri.parse(uriString)
+        val hasPermission = contentResolver.persistedUriPermissions.any {
+            it.uri == uri && it.isReadPermission && it.isWritePermission
+        }
+        if (!hasPermission) return
+        rootTreeUri = uri
+        val rootDoc = DocumentFile.fromTreeUri(this, uri)
+        _projectName.value = rootDoc?.name ?: "Project"
+        refreshProjectTree()
     }
 
     private fun refreshProjectTree() {
