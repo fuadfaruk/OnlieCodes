@@ -6,6 +6,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.CreateNewFolder
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -26,7 +28,11 @@ fun MainScreen(
     projectFiles: List<ProjectFile>,
     openFiles: List<OpenFile>,
     activeFile: OpenFile?,
+    projectMissing: Boolean,
     onOpenFolderClick: () -> Unit,
+    onSelectProjectClick: () -> Unit,
+    onInitializeProjectClick: () -> Unit,
+    onProjectMissingDismissed: () -> Unit,
     onFileClick: (ProjectFile) -> Unit,
     onToggleExpand: (ProjectFile) -> Unit,
     onTabSelect: (OpenFile) -> Unit,
@@ -39,6 +45,7 @@ fun MainScreen(
     onRenameFile: (ProjectFile, String) -> Unit
 ) {
     var showSidebar by remember { mutableStateOf(true) }
+    var showOptionsMenu by remember { mutableStateOf(false) }
     
     // Dialog States
     var showCreateFileDialog by remember { mutableStateOf(false) }
@@ -71,6 +78,24 @@ fun MainScreen(
                                 imageVector = Icons.Default.Save,
                                 contentDescription = "Save Current File",
                                 tint = if (activeFile?.isModified == true) MaterialTheme.colorScheme.primary else Color.Gray
+                            )
+                        }
+                    }
+                    Box {
+                        IconButton(onClick = { showOptionsMenu = true }) {
+                            Icon(Icons.Default.MoreVert, contentDescription = "Options")
+                        }
+                        DropdownMenu(
+                            expanded = showOptionsMenu,
+                            onDismissRequest = { showOptionsMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Open New Project") },
+                                leadingIcon = { Icon(Icons.Default.CreateNewFolder, contentDescription = null) },
+                                onClick = {
+                                    showOptionsMenu = false
+                                    onInitializeProjectClick()
+                                }
                             )
                         }
                     }
@@ -257,6 +282,23 @@ fun MainScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showDeleteDialog = false }) { Text("Cancel") }
+            }
+        )
+    }
+
+    // Dialog: Project Folder Missing
+    if (projectMissing) {
+        AlertDialog(
+            onDismissRequest = { onProjectMissingDismissed() },
+            title = { Text("Project Folder Not Found") },
+            text = {
+                Text("The current project folder could not be found. It may have been moved or deleted. Select a new project folder or initialize a new project to continue.")
+            },
+            confirmButton = {
+                Button(onClick = onSelectProjectClick) { Text("Select New Project Folder") }
+            },
+            dismissButton = {
+                TextButton(onClick = onInitializeProjectClick) { Text("Initialize New Project") }
             }
         )
     }

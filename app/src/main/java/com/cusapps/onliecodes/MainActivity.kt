@@ -38,6 +38,7 @@ class MainActivity : ComponentActivity() {
     private val _projectFiles = MutableStateFlow<List<ProjectFile>>(emptyList())
     private val _openFiles = MutableStateFlow<List<OpenFile>>(emptyList())
     private val _activeFile = MutableStateFlow<OpenFile?>(null)
+    private val _projectMissing = MutableStateFlow(false)
 
     private var rootTreeUri: Uri? = null
 
@@ -50,11 +51,19 @@ class MainActivity : ComponentActivity() {
                 uri,
                 Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
             )
-            rootTreeUri = uri
-            saveRootTreeUri(uri)
             val rootDoc = DocumentFile.fromTreeUri(this, uri)
-            _projectName.value = rootDoc?.name ?: "Project"
-            refreshProjectTree()
+            if (rootDoc != null && rootDoc.exists()) {
+                rootTreeUri = uri
+                saveRootTreeUri(uri)
+                _projectName.value = rootDoc.name ?: "Project"
+                _projectMissing.value = false
+                // Clear tabs belonging to a previously loaded project.
+                _openFiles.value = emptyList()
+                _activeFile.value = null
+                refreshProjectTree()
+            } else {
+                _projectMissing.value = true
+            }
         }
     }
 
@@ -67,20 +76,18 @@ class MainActivity : ComponentActivity() {
                 val projectFilesState = _projectFiles.collectAsState()
                 val openFilesState = _openFiles.collectAsState()
                 val activeFileState = _activeFile.collectAsState()
+                val projectMissingState = _projectMissing.collectAsState()
 
                 MainScreen(
                     projectName = projectNameState.value,
                     projectFiles = projectFilesState.value,
                     openFiles = openFilesState.value,
                     activeFile = activeFileState.value,
-                    onOpenFolderClick = {
-                        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
-                            addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
-                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                            addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-                        }
-                        openFolderLauncher.launch(intent)
-                    },
+                    projectMissing = projectMissingState.value,
+                    onOpenFolderClick = { openFolderPicker() },
+                    onSelectProjectClick = { openFolderPicker() },
+                    onInitializeProjectClick = { openFolderPicker() },
+                    onProjectMissingDismissed = { _projectMissing.value = false },
                     onFileClick = { file -> openFile(file) },
                     onToggleExpand = { file -> toggleFolderExpand(file) },
                     onTabSelect = { openFile -> _activeFile.value = openFile },
@@ -103,6 +110,32 @@ class MainActivity : ComponentActivity() {
             .apply()
     }
 
+    private fun clearSavedRootTreeUri() {
+        getSharedPreferences("settings", Context.MODE_PRIVATE)
+            .edit()
+            .remove("last_project_uri")
+            .apply()
+    }
+
+    private fun openFolderPicker() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+            addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+        }
+        openFolderLauncher.launch(intent)
+    }
+
+    private fun handleMissingProject() {
+        rootTreeUri = null
+        clearSavedRootTreeUri()
+        _projectName.value = null
+        _projectFiles.value = emptyList()
+        _openFiles.value = emptyList()
+        _activeFile.value = null
+        _projectMissing.value = true
+    }
+
     private fun restoreLastProject() {
         val uriString = getSharedPreferences("settings", Context.MODE_PRIVATE)
             .getString("last_project_uri", null) ?: return
@@ -113,7 +146,12 @@ class MainActivity : ComponentActivity() {
         if (!hasPermission) return
         rootTreeUri = uri
         val rootDoc = DocumentFile.fromTreeUri(this, uri)
-        _projectName.value = rootDoc?.name ?: "Project"
+        if (rootDoc == null || !rootDoc.exists()) {
+            // The stored project folder no longer exists (moved/deleted).
+            handleMissingProject()
+            return
+        }
+        _projectName.value = rootDoc.name ?: "Project"
         refreshProjectTree()
     }
 
@@ -121,12 +159,16 @@ class MainActivity : ComponentActivity() {
         val uri = rootTreeUri ?: return
         lifecycleScope.launch(Dispatchers.IO) {
             val rootDoc = DocumentFile.fromTreeUri(this@MainActivity, uri)
-            if (rootDoc != null) {
+            if (rootDoc != null && rootDoc.exists()) {
                 // Read expanded states map to restore user navigation state
                 val expandedMap = getExpandedPaths(_projectFiles.value)
                 val files = buildTree(rootDoc, expandedMap)
                 withContext(Dispatchers.Main) {
                     _projectFiles.value = files
+                }
+            } else {
+                withContext(Dispatchers.Main) {
+                    handleMissingProject()
                 }
             }
         }
