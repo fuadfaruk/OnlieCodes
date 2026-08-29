@@ -17,7 +17,6 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.OffsetMapping
 import androidx.compose.ui.text.input.TransformedText
 import androidx.compose.ui.text.input.VisualTransformation
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.cusapps.onliecodes.ui.theme.*
@@ -30,37 +29,11 @@ fun CodeEditor(
     onContentChange: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val scrollState = rememberScrollState()
-    val lines = content.split("\n")
-    val lineCount = lines.size.coerceAtLeast(1)
-
     Row(
         modifier = modifier
             .fillMaxSize()
             .background(BackgroundDark)
     ) {
-        // Line Numbers Column
-        Column(
-            modifier = Modifier
-                .width(48.dp)
-                .verticalScroll(scrollState)
-                .background(SurfaceDark)
-                .padding(vertical = 12.dp)
-        ) {
-            for (i in 1..lineCount) {
-                Text(
-                    text = i.toString(),
-                    color = EditorLineNumbers,
-                    fontSize = 13.sp,
-                    fontFamily = FontFamily.Monospace,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 8.dp),
-                    textAlign = TextAlign.End
-                )
-            }
-        }
-
         // Divider
         Box(
             modifier = Modifier
@@ -69,14 +42,18 @@ fun CodeEditor(
                 .background(SelectionColor)
         )
 
-        // Actual Text Editor Field
+        // The gutter line numbers are rendered inside the same text layout as
+        // the code (see CodeSyntaxTransformation below), so every number shares
+        // the exact line box of its text line. Each number is therefore always
+        // anchored to the head of its line regardless of font type, font size,
+        // text wrapping, or line spacing.
         BasicTextField(
             value = content,
             onValueChange = onContentChange,
             modifier = Modifier
                 .fillMaxSize()
-                .verticalScroll(scrollState)
-                .padding(12.dp),
+                .verticalScroll(rememberScrollState())
+                .padding(start = 8.dp, top = 12.dp, end = 12.dp, bottom = 12.dp),
             textStyle = TextStyle(
                 color = TextWhite,
                 fontSize = 14.sp,
@@ -97,34 +74,162 @@ object CodeSyntaxTransformation : VisualTransformation {
     private val STRINGS = Pattern.compile("\"[^\"]*\"|'[^']*'")
     private val COMMENTS = Pattern.compile("//.*|/\\*(?s:.*?)\\*/")
 
+    private const val GUTTER_SEPARATOR = "    "
+
     override fun filter(text: AnnotatedString): TransformedText {
+        val raw = text.text
+        val lines = raw.split("\n")
+        val lineCount = lines.size.coerceAtLeast(1)
+        val maxDigits = lineCount.toString().length
+
+        // Original start offset of each line in the raw text.
+        val lineStarts = IntArray(lineCount)
+        var position = 0
+        for (i in lines.indices) {
+            lineStarts[i] = position
+            position += lines[i].length + 1
+        }
+
+        // Width of the gutter text (padding + number + separator) per line.
+        val prefixLen = IntArray(lineCount) { i ->
+            val digits = (i + 1).toString().length
+            maxDigits - digits + digits + GUTTER_SEPARATOR.length
+        }
+
+        // Cumulative gutter width before each line, and the transformed offset
+        // at which that line's code content begins.
+        val cumPrefix = IntArray(lineCount)
+        val contentStart = IntArray(lineCount)
+        var running = 0
+        for (i in prefixLen.indices) {
+            cumPrefix[i] = running
+            contentStart[i] = lineStarts[i] + running + prefixLen[i]
+            running += prefixLen[i]
+        }
+
         val annotated = buildAnnotatedString {
-            append(text.text)
+            lines.forEachIndexed { index, line ->
+                if (index > 0) append("\n")
 
-            // 1. Highlight numbers
-            val numMatcher = NUMBERS.matcher(text.text)
-            while (numMatcher.find()) {
-                addStyle(SpanStyle(color = CodeNumber), numMatcher.start(), numMatcher.end())
+                val gutterStart = length
+                val number = (index + 1).toString()
+                append(" ".repeat(maxDigits - number.length))
+                append(number)
+                append(GUTTER_SEPARATOR)
+                addStyle(
+                    SpanStyle(color = EditorLineNumbers, background = SurfaceDark),
+                    gutterStart, length
+                )
+                append(line)
             }
 
-            // 2. Highlight keywords
-            val keywordMatcher = KEYWORDS.matcher(text.text)
-            while (keywordMatcher.find()) {
-                addStyle(SpanStyle(color = CodeKeyword), keywordMatcher.start(), keywordMatcher.end())
-            }
+            // Syntax highlighting, translated from raw coordinates into the
+            // gutter-included transformed coordinates.
+            highlight(raw, cumPrefix, lineStarts)
+        }
 
-            // 3. Highlight strings
-            val stringMatcher = STRINGS.matcher(text.text)
-            while (stringMatcher.find()) {
-                addStyle(SpanStyle(color = CodeString), stringMatcher.start(), stringMatcher.end())
-            }
+        return TransformedText(
+            annotated,
+            LineNumberOffsetMapping(cumPrefix, contentStart, lineStarts, raw.length)
+        )
+    }
 
-            // 4. Highlight comments
-            val commentMatcher = COMMENTS.matcher(text.text)
-            while (commentMatcher.find()) {
-                addStyle(SpanStyle(color = CodeComment), commentMatcher.start(), commentMatcher.end())
+    private fun AnnotatedString.Builder.highlight(
+        raw: String,
+        cumPrefix: IntArray,
+        lineStarts: IntArray
+    ) {
+        fun lineIndex(offset: Int): Int {
+            var lo = 0
+            var hi = lineStarts.size - 1
+            var result = 0
+            while (lo <= hi) {
+                val mid = (lo + hi) ushr 1
+                if (lineStarts[mid] <= offset) {
+                    result = mid
+                    lo = mid + 1
+                } else {
+                    hi = mid - 1
+                }
+            }
+            return result
+        }
+
+        fun startOffset(s: Int): Int = s + cumPrefix[lineIndex(s)]
+
+        fun endOffset(e: Int): Int =
+            if (e <= 0) 0 else e + cumPrefix[lineIndex(e - 1)]
+
+        val numMatcher = NUMBERS.matcher(raw)
+        while (numMatcher.find()) {
+            addStyle(SpanStyle(color = CodeNumber), startOffset(numMatcher.start()), endOffset(numMatcher.end()))
+        }
+        val keywordMatcher = KEYWORDS.matcher(raw)
+        while (keywordMatcher.find()) {
+            addStyle(SpanStyle(color = CodeKeyword), startOffset(keywordMatcher.start()), endOffset(keywordMatcher.end()))
+        }
+        val stringMatcher = STRINGS.matcher(raw)
+        while (stringMatcher.find()) {
+            addStyle(SpanStyle(color = CodeString), startOffset(stringMatcher.start()), endOffset(stringMatcher.end()))
+        }
+        val commentMatcher = COMMENTS.matcher(raw)
+        while (commentMatcher.find()) {
+            addStyle(SpanStyle(color = CodeComment), startOffset(commentMatcher.start()), endOffset(commentMatcher.end()))
+        }
+    }
+}
+
+private class LineNumberOffsetMapping(
+    private val cumPrefix: IntArray,
+    private val contentStart: IntArray,
+    private val lineStarts: IntArray,
+    private val rawLength: Int
+) : OffsetMapping {
+
+    private fun lineIndex(offset: Int): Int {
+        var lo = 0
+        var hi = lineStarts.size - 1
+        var result = 0
+        while (lo <= hi) {
+            val mid = (lo + hi) ushr 1
+            if (lineStarts[mid] <= offset) {
+                result = mid
+                lo = mid + 1
+            } else {
+                hi = mid - 1
             }
         }
-        return TransformedText(annotated, OffsetMapping.Identity)
+        return result
+    }
+
+    override fun originalToTransformed(offset: Int): Int {
+        val o = offset.coerceIn(0, rawLength)
+        val index = lineIndex(o)
+        return if (o == lineStarts[index]) {
+            contentStart[index]
+        } else {
+            o + cumPrefix[index]
+        }
+    }
+
+    override fun transformedToOriginal(offset: Int): Int {
+        var lo = 0
+        var hi = lineStarts.size - 1
+        var result = 0
+        while (lo <= hi) {
+            val mid = (lo + hi) ushr 1
+            if (lineStarts[mid] + cumPrefix[mid] <= offset) {
+                result = mid
+                lo = mid + 1
+            } else {
+                hi = mid - 1
+            }
+        }
+        val original = if (offset < contentStart[result]) {
+            lineStarts[result]
+        } else {
+            offset - cumPrefix[result]
+        }
+        return original.coerceIn(0, rawLength)
     }
 }
