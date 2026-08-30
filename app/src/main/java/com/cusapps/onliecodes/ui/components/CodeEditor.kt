@@ -17,7 +17,9 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.OffsetMapping
 import androidx.compose.ui.text.input.TransformedText
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextIndent
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import com.cusapps.onliecodes.ui.theme.*
 import java.util.regex.Pattern
@@ -29,6 +31,8 @@ fun CodeEditor(
     onContentChange: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val lineCount = content.count { it == '\n' } + 1
+    val gutterChars = lineCount.toString().length + CodeSyntaxTransformation.GUTTER_SEPARATOR.length
     Row(
         modifier = modifier
             .fillMaxSize()
@@ -58,13 +62,19 @@ fun CodeEditor(
                 color = TextWhite,
                 fontSize = 14.sp,
                 fontFamily = FontFamily.Monospace,
-                lineHeight = 18.sp
+                lineHeight = 18.sp,
+                textIndent = TextIndent(
+                    restLine = (gutterChars * MONO_CHAR_ADVANCE_EM).em
+                )
             ),
             cursorBrush = SolidColor(PrimaryPurple),
             visualTransformation = CodeSyntaxTransformation
         )
     }
 }
+
+// Standard monospace advance width: every glyph (digits, spaces) is 0.6em.
+private const val MONO_CHAR_ADVANCE_EM = 0.6f
 
 object CodeSyntaxTransformation : VisualTransformation {
     private val KEYWORDS = Pattern.compile(
@@ -74,7 +84,7 @@ object CodeSyntaxTransformation : VisualTransformation {
     private val STRINGS = Pattern.compile("\"[^\"]*\"|'[^']*'")
     private val COMMENTS = Pattern.compile("//.*|/\\*(?s:.*?)\\*/")
 
-    private const val GUTTER_SEPARATOR = "    "
+    const val GUTTER_SEPARATOR = "    "
 
     override fun filter(text: AnnotatedString): TransformedText {
         val raw = text.text
@@ -130,7 +140,7 @@ object CodeSyntaxTransformation : VisualTransformation {
 
         return TransformedText(
             annotated,
-            LineNumberOffsetMapping(cumPrefix, contentStart, lineStarts, raw.length)
+            LineNumberOffsetMapping(cumPrefix, prefixLen, contentStart, lineStarts, raw.length)
         )
     }
 
@@ -181,6 +191,7 @@ object CodeSyntaxTransformation : VisualTransformation {
 
 private class LineNumberOffsetMapping(
     private val cumPrefix: IntArray,
+    private val prefixLen: IntArray,
     private val contentStart: IntArray,
     private val lineStarts: IntArray,
     private val rawLength: Int
@@ -205,11 +216,7 @@ private class LineNumberOffsetMapping(
     override fun originalToTransformed(offset: Int): Int {
         val o = offset.coerceIn(0, rawLength)
         val index = lineIndex(o)
-        return if (o == lineStarts[index]) {
-            contentStart[index]
-        } else {
-            o + cumPrefix[index]
-        }
+        return o + cumPrefix[index] + prefixLen[index]
     }
 
     override fun transformedToOriginal(offset: Int): Int {
@@ -228,7 +235,7 @@ private class LineNumberOffsetMapping(
         val original = if (offset < contentStart[result]) {
             lineStarts[result]
         } else {
-            offset - cumPrefix[result]
+            offset - cumPrefix[result] - prefixLen[result]
         }
         return original.coerceIn(0, rawLength)
     }
