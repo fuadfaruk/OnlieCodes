@@ -31,19 +31,21 @@ fun CodeEditor(
     onContentChange: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val palette = LocalEditorPalette.current
     val lineCount = content.count { it == '\n' } + 1
     val gutterChars = lineCount.toString().length + CodeSyntaxTransformation.GUTTER_SEPARATOR.length
+    val syntaxTransformation = remember(palette) { CodeSyntaxTransformation(palette) }
     Row(
         modifier = modifier
             .fillMaxSize()
-            .background(BackgroundDark)
+            .background(palette.background)
     ) {
         // Divider
         Box(
             modifier = Modifier
                 .fillMaxHeight()
                 .width(1.dp)
-                .background(SelectionColor)
+                .background(palette.selection)
         )
 
         // The gutter line numbers are rendered inside the same text layout as
@@ -59,7 +61,7 @@ fun CodeEditor(
                 .verticalScroll(rememberScrollState())
                 .padding(start = 8.dp, top = 12.dp, end = 12.dp, bottom = 12.dp),
             textStyle = TextStyle(
-                color = TextWhite,
+                color = palette.text,
                 fontSize = 14.sp,
                 fontFamily = FontFamily.Monospace,
                 lineHeight = 18.sp,
@@ -67,8 +69,8 @@ fun CodeEditor(
                     restLine = (gutterChars * MONO_CHAR_ADVANCE_EM).em
                 )
             ),
-            cursorBrush = SolidColor(PrimaryPurple),
-            visualTransformation = CodeSyntaxTransformation
+            cursorBrush = SolidColor(palette.cursor),
+            visualTransformation = syntaxTransformation
         )
     }
 }
@@ -76,7 +78,9 @@ fun CodeEditor(
 // Standard monospace advance width: every glyph (digits, spaces) is 0.6em.
 private const val MONO_CHAR_ADVANCE_EM = 0.6f
 
-object CodeSyntaxTransformation : VisualTransformation {
+class CodeSyntaxTransformation(
+    private val palette: EditorPalette
+) : VisualTransformation {
     private val KEYWORDS = Pattern.compile(
         "\\b(package|import|class|interface|object|fun|val|var|return|if|else|for|while|when|is|as|in|try|catch|throw|this|super|null|true|false|void|public|private|protected|static|final|new|const|default|switch|case|break|continue)\\b"
     )
@@ -84,7 +88,9 @@ object CodeSyntaxTransformation : VisualTransformation {
     private val STRINGS = Pattern.compile("\"[^\"]*\"|'[^']*'")
     private val COMMENTS = Pattern.compile("//.*|/\\*(?s:.*?)\\*/")
 
-    const val GUTTER_SEPARATOR = "    "
+    companion object {
+        const val GUTTER_SEPARATOR = "    "
+    }
 
     override fun filter(text: AnnotatedString): TransformedText {
         val raw = text.text
@@ -127,7 +133,7 @@ object CodeSyntaxTransformation : VisualTransformation {
                 append(number)
                 append(GUTTER_SEPARATOR)
                 addStyle(
-                    SpanStyle(color = EditorLineNumbers, background = SurfaceDark),
+                    SpanStyle(color = palette.gutterNumbers, background = palette.surface),
                     gutterStart, length
                 )
                 append(line)
@@ -172,19 +178,19 @@ object CodeSyntaxTransformation : VisualTransformation {
 
         val numMatcher = NUMBERS.matcher(raw)
         while (numMatcher.find()) {
-            addStyle(SpanStyle(color = CodeNumber), startOffset(numMatcher.start()), endOffset(numMatcher.end()))
+            addStyle(SpanStyle(color = palette.number), startOffset(numMatcher.start()), endOffset(numMatcher.end()))
         }
         val keywordMatcher = KEYWORDS.matcher(raw)
         while (keywordMatcher.find()) {
-            addStyle(SpanStyle(color = CodeKeyword), startOffset(keywordMatcher.start()), endOffset(keywordMatcher.end()))
+            addStyle(SpanStyle(color = palette.keyword), startOffset(keywordMatcher.start()), endOffset(keywordMatcher.end()))
         }
         val stringMatcher = STRINGS.matcher(raw)
         while (stringMatcher.find()) {
-            addStyle(SpanStyle(color = CodeString), startOffset(stringMatcher.start()), endOffset(stringMatcher.end()))
+            addStyle(SpanStyle(color = palette.string), startOffset(stringMatcher.start()), endOffset(stringMatcher.end()))
         }
         val commentMatcher = COMMENTS.matcher(raw)
         while (commentMatcher.find()) {
-            addStyle(SpanStyle(color = CodeComment), startOffset(commentMatcher.start()), endOffset(commentMatcher.end()))
+            addStyle(SpanStyle(color = palette.comment), startOffset(commentMatcher.start()), endOffset(commentMatcher.end()))
         }
     }
 }

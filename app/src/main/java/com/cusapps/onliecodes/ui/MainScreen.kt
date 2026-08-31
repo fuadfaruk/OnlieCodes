@@ -8,6 +8,8 @@ import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.LightMode
+import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -19,7 +21,7 @@ import com.cusapps.onliecodes.model.ProjectFile
 import com.cusapps.onliecodes.ui.components.CodeEditor
 import com.cusapps.onliecodes.ui.components.FileTabs
 import com.cusapps.onliecodes.ui.components.FileTree
-import com.cusapps.onliecodes.ui.theme.BackgroundDark
+import com.cusapps.onliecodes.ui.theme.LocalEditorPalette
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -42,7 +44,9 @@ fun MainScreen(
     onCreateFile: (ProjectFile?, String) -> Unit,
     onCreateFolder: (ProjectFile?, String) -> Unit,
     onDeleteFile: (ProjectFile) -> Unit,
-    onRenameFile: (ProjectFile, String) -> Unit
+    onRenameFile: (ProjectFile, String) -> Unit,
+    isDarkTheme: Boolean,
+    onToggleTheme: () -> Unit
 ) {
     var showSidebar by remember { mutableStateOf(true) }
     var showOptionsMenu by remember { mutableStateOf(false) }
@@ -89,14 +93,29 @@ fun MainScreen(
                             expanded = showOptionsMenu,
                             onDismissRequest = { showOptionsMenu = false }
                         ) {
-                            DropdownMenuItem(
-                                text = { Text("Open New Project") },
-                                leadingIcon = { Icon(Icons.Default.CreateNewFolder, contentDescription = null) },
-                                onClick = {
-                                    showOptionsMenu = false
-                                    onInitializeProjectClick()
-                                }
-                            )
+                        DropdownMenuItem(
+                            text = { Text("Open New Project") },
+                            leadingIcon = { Icon(Icons.Default.CreateNewFolder, contentDescription = null) },
+                            onClick = {
+                                showOptionsMenu = false
+                                onInitializeProjectClick()
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = {
+                                Text(if (isDarkTheme) "Switch to Light Theme" else "Switch to Dark Theme")
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = if (isDarkTheme) Icons.Default.LightMode else Icons.Default.DarkMode,
+                                    contentDescription = null
+                                )
+                            },
+                            onClick = {
+                                showOptionsMenu = false
+                                onToggleTheme()
+                            }
+                        )
                         }
                     }
                 },
@@ -109,11 +128,12 @@ fun MainScreen(
             )
         }
     ) { paddingValues ->
+        val palette = LocalEditorPalette.current
         Row(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
-                .background(BackgroundDark)
+                .background(palette.background)
         ) {
             // Sidebar Navigation Tree
             if (showSidebar && projectName != null) {
@@ -171,7 +191,7 @@ fun MainScreen(
                     ) {
                         Text(
                             text = if (projectName == null) "Open a directory to begin coding" else "Select a file to edit",
-                            color = Color.Gray
+                            color = LocalEditorPalette.current.muted
                         )
                     }
                 }

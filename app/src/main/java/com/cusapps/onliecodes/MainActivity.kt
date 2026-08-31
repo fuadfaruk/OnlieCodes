@@ -16,6 +16,9 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.documentfile.provider.DocumentFile
@@ -39,6 +42,8 @@ class MainActivity : ComponentActivity() {
     private val _openFiles = MutableStateFlow<List<OpenFile>>(emptyList())
     private val _activeFile = MutableStateFlow<OpenFile?>(null)
     private val _projectMissing = MutableStateFlow(false)
+
+    private var isDarkTheme by mutableStateOf(true)
 
     private var rootTreeUri: Uri? = null
 
@@ -70,8 +75,10 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         restoreLastProject()
+        isDarkTheme = getSharedPreferences("settings", Context.MODE_PRIVATE)
+            .getBoolean("dark_theme", true)
         setContent {
-            OnlieCodesTheme {
+            OnlieCodesTheme(darkTheme = isDarkTheme) {
                 val projectNameState = _projectName.collectAsState()
                 val projectFilesState = _projectFiles.collectAsState()
                 val openFilesState = _openFiles.collectAsState()
@@ -97,10 +104,20 @@ class MainActivity : ComponentActivity() {
                     onCreateFile = { parent, name -> createFile(parent, name) },
                     onCreateFolder = { parent, name -> createFolder(parent, name) },
                     onDeleteFile = { file -> deleteFile(file) },
-                    onRenameFile = { file, newName -> renameFile(file, newName) }
+                    onRenameFile = { file, newName -> renameFile(file, newName) },
+                    isDarkTheme = isDarkTheme,
+                    onToggleTheme = { toggleTheme() }
                 )
             }
         }
+    }
+
+    private fun toggleTheme() {
+        isDarkTheme = !isDarkTheme
+        getSharedPreferences("settings", Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean("dark_theme", isDarkTheme)
+            .apply()
     }
 
     private fun saveRootTreeUri(uri: Uri) {

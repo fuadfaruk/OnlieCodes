@@ -12,11 +12,10 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.cusapps.onliecodes.model.ProjectFile
-import com.cusapps.onliecodes.ui.theme.SurfaceDark
+import com.cusapps.onliecodes.ui.theme.LocalEditorPalette
 
 @Composable
 fun FileTree(
@@ -29,11 +28,12 @@ fun FileTree(
     onRenameFile: (ProjectFile) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val palette = LocalEditorPalette.current
     Column(
         modifier = modifier
             .fillMaxHeight()
             .width(280.dp)
-            .background(SurfaceDark)
+            .background(palette.surface)
     ) {
         // Toolbar for root actions
         Row(
@@ -51,10 +51,10 @@ fun FileTree(
             )
             Row {
                 IconButton(onClick = { onCreateFile(null) }) {
-                    Icon(Icons.Default.NoteAdd, contentDescription = "New File", tint = Color.LightGray)
+                    Icon(Icons.Default.NoteAdd, contentDescription = "New File", tint = palette.muted)
                 }
                 IconButton(onClick = { onCreateFolder(null) }) {
-                    Icon(Icons.Default.CreateNewFolder, contentDescription = "New Folder", tint = Color.LightGray)
+                    Icon(Icons.Default.CreateNewFolder, contentDescription = "New Folder", tint = palette.muted)
                 }
             }
         }
@@ -97,6 +97,7 @@ fun FileTreeItem(
     onRename: () -> Unit
 ) {
     var showMenu by remember { mutableStateOf(false) }
+    val palette = LocalEditorPalette.current
 
     Row(
         modifier = Modifier
@@ -112,13 +113,13 @@ fun FileTreeItem(
                 Icons.Default.Description
             },
             contentDescription = null,
-            tint = if (file.isDirectory) MaterialTheme.colorScheme.primary else Color.LightGray,
+            tint = if (file.isDirectory) MaterialTheme.colorScheme.primary else palette.muted,
             modifier = Modifier.size(20.dp)
         )
         Spacer(modifier = Modifier.width(8.dp))
         Text(
             text = file.name,
-            color = Color.White,
+            color = palette.text,
             fontSize = 14.sp,
             modifier = Modifier.weight(1f)
         )
@@ -129,7 +130,7 @@ fun FileTreeItem(
                 onClick = { showMenu = true },
                 modifier = Modifier.size(24.dp)
             ) {
-                Icon(Icons.Default.MoreVert, contentDescription = "File Actions", tint = Color.Gray)
+                Icon(Icons.Default.MoreVert, contentDescription = "File Actions", tint = palette.muted)
             }
             DropdownMenu(
                 expanded = showMenu,
