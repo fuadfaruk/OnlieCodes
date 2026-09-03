@@ -33,7 +33,7 @@ fun CodeEditor(
 ) {
     val palette = LocalEditorPalette.current
     val lineCount = content.count { it == '\n' } + 1
-    val gutterChars = lineCount.toString().length + CodeSyntaxTransformation.GUTTER_SEPARATOR.length
+    val gutterChars = lineCount.toString().length
     val syntaxTransformation = remember(palette) { CodeSyntaxTransformation(palette) }
     Row(
         modifier = modifier
@@ -48,7 +48,6 @@ fun CodeEditor(
                 .background(palette.selection)
         )
 
-        // The gutter line numbers are rendered inside the same text layout as
         // the code (see CodeSyntaxTransformation below), so every number shares
         // the exact line box of its text line. Each number is therefore always
         // anchored to the head of its line regardless of font type, font size,
@@ -88,10 +87,6 @@ class CodeSyntaxTransformation(
     private val STRINGS = Pattern.compile("\"[^\"]*\"|'[^']*'")
     private val COMMENTS = Pattern.compile("//.*|/\\*(?s:.*?)\\*/")
 
-    companion object {
-        const val GUTTER_SEPARATOR = "    "
-    }
-
     override fun filter(text: AnnotatedString): TransformedText {
         val raw = text.text
         val lines = raw.split("\n")
@@ -109,7 +104,7 @@ class CodeSyntaxTransformation(
         // Width of the gutter text (padding + number + separator) per line.
         val prefixLen = IntArray(lineCount) { i ->
             val digits = (i + 1).toString().length
-            maxDigits - digits + digits + GUTTER_SEPARATOR.length
+            maxDigits - digits + digits
         }
 
         // Cumulative gutter width before each line, and the transformed offset
@@ -131,7 +126,6 @@ class CodeSyntaxTransformation(
                 val number = (index + 1).toString()
                 append(" ".repeat(maxDigits - number.length))
                 append(number)
-                append(GUTTER_SEPARATOR)
                 addStyle(
                     SpanStyle(color = palette.gutterNumbers, background = palette.surface),
                     gutterStart, length
