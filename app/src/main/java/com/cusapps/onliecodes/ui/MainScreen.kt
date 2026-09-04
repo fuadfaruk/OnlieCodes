@@ -8,8 +8,7 @@ import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.LightMode
-import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -50,6 +49,7 @@ fun MainScreen(
 ) {
     var showSidebar by remember { mutableStateOf(true) }
     var showOptionsMenu by remember { mutableStateOf(false) }
+    var showSettingsDialog by remember { mutableStateOf(false) }
     
     // Dialog States
     var showCreateFileDialog by remember { mutableStateOf(false) }
@@ -102,18 +102,11 @@ fun MainScreen(
                             }
                         )
                         DropdownMenuItem(
-                            text = {
-                                Text(if (isDarkTheme) "Switch to Light Theme" else "Switch to Dark Theme")
-                            },
-                            leadingIcon = {
-                                Icon(
-                                    imageVector = if (isDarkTheme) Icons.Default.LightMode else Icons.Default.DarkMode,
-                                    contentDescription = null
-                                )
-                            },
+                            text = { Text("Settings") },
+                            leadingIcon = { Icon(Icons.Default.Settings, contentDescription = null) },
                             onClick = {
                                 showOptionsMenu = false
-                                onToggleTheme()
+                                showSettingsDialog = true
                             }
                         )
                         }
@@ -302,6 +295,30 @@ fun MainScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showDeleteDialog = false }) { Text("Cancel") }
+            }
+        )
+    }
+
+    // Dialog: Settings
+    if (showSettingsDialog) {
+        AlertDialog(
+            onDismissRequest = { showSettingsDialog = false },
+            title = { Text("Settings") },
+            text = {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text("Dark Theme")
+                    Switch(
+                        checked = isDarkTheme,
+                        onCheckedChange = { onToggleTheme() }
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showSettingsDialog = false }) { Text("Done") }
             }
         )
     }
