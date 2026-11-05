@@ -7,7 +7,7 @@ OnlieCodes (shown as **Onlie Codes** on Android) is a native Android code and te
 - Folder-based projects using Android's Storage Access Framework, with access granted through the system folder picker.
 - An expandable file tree with actions to create, rename, and delete files and folders.
 - Tabbed editing with an unsaved-change indicator and a save action for the active file.
-- A monospace editor with line numbers, soft wrapping, and vertical scrolling.
+- A monospace editor with line numbers, soft wrapping, and vertical scrolling. (Still working on it)
 - Basic regex-based highlighting for common keywords, numbers, quoted strings, and C-style comments.
 - Light and dark themes through **Settings**, with the theme preference and last project folder remembered between launches.
 
