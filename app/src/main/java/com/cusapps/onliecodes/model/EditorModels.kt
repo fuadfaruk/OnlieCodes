@@ -14,5 +14,8 @@ data class OpenFile(
     val uri: Uri,
     val name: String,
     val content: String,
-    val isModified: Boolean = false
-)
+    val savedContent: String? = content
+) {
+    val isModified: Boolean
+        get() = content != savedContent
+}

@@ -24,7 +24,8 @@ fun FileTabs(
     activeFile: OpenFile?,
     onTabSelect: (OpenFile) -> Unit,
     onTabClose: (OpenFile) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    canCloseTabs: Boolean = true
 ) {
     val palette = LocalEditorPalette.current
     Row(
@@ -58,7 +59,7 @@ fun FileTabs(
                     tint = if (isActive) MaterialTheme.colorScheme.primary else palette.muted,
                     modifier = Modifier
                         .size(16.dp)
-                        .clickable { onTabClose(openFile) }
+                        .clickable(enabled = canCloseTabs) { onTabClose(openFile) }
                 )
             }
             // Vertical divider between tabs

@@ -6,15 +6,6 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
-import androidx.compose.foundation.layout.*
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.NoteAdd
-import androidx.compose.material.icons.filled.CreateNewFolder
-import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.filled.Description
-import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Delete
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -24,13 +15,13 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.lifecycleScope
 import android.webkit.MimeTypeMap
+import com.cusapps.onliecodes.model.EditorSession
 import com.cusapps.onliecodes.model.OpenFile
 import com.cusapps.onliecodes.model.ProjectFile
 import com.cusapps.onliecodes.ui.MainScreen
 import com.cusapps.onliecodes.ui.theme.OnlieCodesTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.IOException
@@ -39,36 +30,23 @@ class MainActivity : ComponentActivity() {
 
     private val _projectName = MutableStateFlow<String?>(null)
     private val _projectFiles = MutableStateFlow<List<ProjectFile>>(emptyList())
-    private val _openFiles = MutableStateFlow<List<OpenFile>>(emptyList())
-    private val _activeFile = MutableStateFlow<OpenFile?>(null)
     private val _projectMissing = MutableStateFlow(false)
+    private val editor = EditorSession(
+        writeFile = { writeFile(it) },
+        switchProject = { switchProject(it) }
+    )
 
     private var isDarkTheme by mutableStateOf(true)
 
     private var rootTreeUri: Uri? = null
+    private var projectGeneration = 0L
 
     private val openFolderLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
             val uri = result.data?.data ?: return@registerForActivityResult
-            contentResolver.takePersistableUriPermission(
-                uri,
-                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-            )
-            val rootDoc = DocumentFile.fromTreeUri(this, uri)
-            if (rootDoc != null && rootDoc.exists()) {
-                rootTreeUri = uri
-                saveRootTreeUri(uri)
-                _projectName.value = rootDoc.name ?: "Project"
-                _projectMissing.value = false
-                // Clear tabs belonging to a previously loaded project.
-                _openFiles.value = emptyList()
-                _activeFile.value = null
-                refreshProjectTree()
-            } else {
-                _projectMissing.value = true
-            }
+            if (uri != rootTreeUri) editor.requestSwitchProject(uri)
         }
     }
 
@@ -81,26 +59,31 @@ class MainActivity : ComponentActivity() {
             OnlieCodesTheme(darkTheme = isDarkTheme) {
                 val projectNameState = _projectName.collectAsState()
                 val projectFilesState = _projectFiles.collectAsState()
-                val openFilesState = _openFiles.collectAsState()
-                val activeFileState = _activeFile.collectAsState()
                 val projectMissingState = _projectMissing.collectAsState()
 
                 MainScreen(
                     projectName = projectNameState.value,
                     projectFiles = projectFilesState.value,
-                    openFiles = openFilesState.value,
-                    activeFile = activeFileState.value,
+                    openFiles = editor.openFiles,
+                    activeFile = editor.activeFile,
                     projectMissing = projectMissingState.value,
+                    filesPendingSave = editor.filesPendingSave,
+                    isSaving = editor.isSaving,
+                    errorMessage = editor.errorMessage,
                     onOpenFolderClick = { openFolderPicker() },
                     onSelectProjectClick = { openFolderPicker() },
                     onInitializeProjectClick = { openFolderPicker() },
                     onProjectMissingDismissed = { _projectMissing.value = false },
                     onFileClick = { file -> openFile(file) },
                     onToggleExpand = { file -> toggleFolderExpand(file) },
-                    onTabSelect = { openFile -> _activeFile.value = openFile },
-                    onTabClose = { openFile -> closeTab(openFile) },
-                    onContentChange = { newContent -> updateActiveFileContent(newContent) },
-                    onSaveClick = { saveActiveFile() },
+                    onTabSelect = { openFile -> editor.selectFile(openFile.uri) },
+                    onTabClose = { openFile -> editor.requestCloseTab(openFile.uri) },
+                    onContentChange = { newContent -> editor.updateContent(newContent) },
+                    onSaveClick = { lifecycleScope.launch { editor.saveActiveFile() } },
+                    onSaveChanges = { lifecycleScope.launch { editor.savePendingChanges() } },
+                    onDiscardChanges = { editor.discardPendingChanges() },
+                    onCancelChanges = { editor.cancelPendingAction() },
+                    onErrorDismissed = { editor.dismissError() },
                     onCreateFile = { parent, name -> createFile(parent, name) },
                     onCreateFolder = { parent, name -> createFolder(parent, name) },
                     onDeleteFile = { file -> deleteFile(file) },
@@ -135,6 +118,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun openFolderPicker() {
+        if (editor.isSaving || editor.filesPendingSave != null) return
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
             addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -143,13 +127,32 @@ class MainActivity : ComponentActivity() {
         openFolderLauncher.launch(intent)
     }
 
+    private fun switchProject(uri: Uri) {
+        val rootDoc = DocumentFile.fromTreeUri(this, uri)
+        if (rootDoc == null || !rootDoc.exists() || !rootDoc.isDirectory) {
+            throw IOException("The selected project folder could not be found.")
+        }
+        contentResolver.takePersistableUriPermission(
+            uri,
+            Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+        )
+        val name = rootDoc.name ?: "Project"
+        saveRootTreeUri(uri)
+        projectGeneration++
+        rootTreeUri = uri
+        _projectName.value = name
+        _projectFiles.value = emptyList()
+        _projectMissing.value = false
+        refreshProjectTree()
+    }
+
     private fun handleMissingProject() {
+        projectGeneration++
         rootTreeUri = null
         clearSavedRootTreeUri()
         _projectName.value = null
         _projectFiles.value = emptyList()
-        _openFiles.value = emptyList()
-        _activeFile.value = null
+        // Keep open buffers so choosing a replacement project still protects their edits.
         _projectMissing.value = true
     }
 
@@ -173,21 +176,20 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun refreshProjectTree() {
-        val uri = rootTreeUri ?: return
-        lifecycleScope.launch(Dispatchers.IO) {
-            val rootDoc = DocumentFile.fromTreeUri(this@MainActivity, uri)
-            if (rootDoc != null && rootDoc.exists()) {
-                // Read expanded states map to restore user navigation state
-                val expandedMap = getExpandedPaths(_projectFiles.value)
-                val files = buildTree(rootDoc, expandedMap)
-                withContext(Dispatchers.Main) {
-                    _projectFiles.value = files
-                }
-            } else {
-                withContext(Dispatchers.Main) {
-                    handleMissingProject()
+        lifecycleScope.launch {
+            val uri = rootTreeUri ?: return@launch
+            val generation = projectGeneration
+            val expandedMap = getExpandedPaths(_projectFiles.value)
+            val files = withContext(Dispatchers.IO) {
+                val rootDoc = DocumentFile.fromTreeUri(this@MainActivity, uri)
+                if (rootDoc != null && rootDoc.exists()) {
+                    buildTree(rootDoc, expandedMap)
+                } else {
+                    null
                 }
             }
+            if (generation != projectGeneration) return@launch
+            if (files != null) _projectFiles.value = files else handleMissingProject()
         }
     }
 
@@ -251,19 +253,20 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun openFile(file: ProjectFile) {
-        val existing = _openFiles.value.find { it.uri == file.uri }
+        val existing = editor.openFiles.find { it.uri == file.uri }
         if (existing != null) {
-            _activeFile.value = existing
+            editor.selectFile(existing.uri)
             return
         }
+        val generation = projectGeneration
         lifecycleScope.launch(Dispatchers.IO) {
             try {
                 contentResolver.openInputStream(file.uri)?.use { stream ->
                     val text = stream.bufferedReader().readText()
                     withContext(Dispatchers.Main) {
-                        val openFile = OpenFile(file.uri, file.name, text)
-                        _openFiles.value = _openFiles.value + openFile
-                        _activeFile.value = openFile
+                        if (generation == projectGeneration) {
+                            editor.openFile(OpenFile(file.uri, file.name, text))
+                        }
                     }
                 }
             } catch (e: IOException) {
@@ -272,54 +275,18 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun closeTab(openFile: OpenFile) {
-        val nextList = _openFiles.value.filter { it.uri != openFile.uri }
-        _openFiles.value = nextList
-        if (_activeFile.value?.uri == openFile.uri) {
-            _activeFile.value = nextList.lastOrNull()
-        }
-    }
-
-    private fun updateActiveFileContent(newContent: String) {
-        val active = _activeFile.value ?: return
-        val updated = active.copy(content = newContent, isModified = true)
-        _activeFile.value = updated
-        _openFiles.value = _openFiles.value.map {
-            if (it.uri == active.uri) updated else it
-        }
-    }
-
-    private fun saveActiveFile() {
-        val active = _activeFile.value ?: return
-        lifecycleScope.launch(Dispatchers.IO) {
-            try {
-                contentResolver.openOutputStream(active.uri, "w")?.use { stream ->
-                    stream.bufferedWriter().use { writer ->
-                        writer.write(active.content)
-                    }
-                }
-                withContext(Dispatchers.Main) {
-                    val saved = active.copy(isModified = false)
-                    if (_activeFile.value?.uri == active.uri) {
-                        _activeFile.value = saved
-                    }
-                    _openFiles.value = _openFiles.value.map {
-                        if (it.uri == active.uri) saved else it
-                    }
-                }
-            } catch (e: IOException) {
-                e.printStackTrace()
-            }
+    private suspend fun writeFile(file: OpenFile) = withContext(Dispatchers.IO) {
+        val stream = contentResolver.openOutputStream(file.uri, "wt")
+            ?: throw IOException("The document provider did not open a write stream.")
+        stream.bufferedWriter().use { writer ->
+            writer.write(file.content)
         }
     }
 
     private fun createFile(parent: ProjectFile?, name: String) {
+        val parentUri = parent?.uri ?: rootTreeUri ?: return
         lifecycleScope.launch(Dispatchers.IO) {
-            val parentDoc = if (parent != null) {
-                DocumentFile.fromTreeUri(this@MainActivity, parent.uri)
-            } else {
-                rootTreeUri?.let { DocumentFile.fromTreeUri(this@MainActivity, it) }
-            }
+            val parentDoc = DocumentFile.fromTreeUri(this@MainActivity, parentUri)
             parentDoc?.createFile(mimeTypeFor(name), name)
             refreshProjectTree()
         }
@@ -338,26 +305,22 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun createFolder(parent: ProjectFile?, name: String) {
+        val parentUri = parent?.uri ?: rootTreeUri ?: return
         lifecycleScope.launch(Dispatchers.IO) {
-            val parentDoc = if (parent != null) {
-                DocumentFile.fromTreeUri(this@MainActivity, parent.uri)
-            } else {
-                rootTreeUri?.let { DocumentFile.fromTreeUri(this@MainActivity, it) }
-            }
+            val parentDoc = DocumentFile.fromTreeUri(this@MainActivity, parentUri)
             parentDoc?.createDirectory(name)
             refreshProjectTree()
         }
     }
 
     private fun deleteFile(file: ProjectFile) {
+        val generation = projectGeneration
         lifecycleScope.launch(Dispatchers.IO) {
             val doc = DocumentFile.fromSingleUri(this@MainActivity, file.uri)
-            doc?.delete()
+            val deleted = doc?.delete() == true
             withContext(Dispatchers.Main) {
-                // If the deleted file is currently open, close it.
-                val openFile = _openFiles.value.find { it.uri == file.uri }
-                if (openFile != null) {
-                    closeTab(openFile)
+                if (deleted && generation == projectGeneration) {
+                    editor.removeFile(file.uri)
                 }
             }
             refreshProjectTree()
@@ -365,17 +328,13 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun renameFile(file: ProjectFile, newName: String) {
+        val generation = projectGeneration
         lifecycleScope.launch(Dispatchers.IO) {
             val doc = DocumentFile.fromSingleUri(this@MainActivity, file.uri)
-            doc?.renameTo(newName)
+            val renamed = doc?.renameTo(newName) == true
             withContext(Dispatchers.Main) {
-                // Update open tab names if renamed
-                _openFiles.value = _openFiles.value.map {
-                    if (it.uri == file.uri) it.copy(name = newName) else it
-                }
-                val active = _activeFile.value
-                if (active != null && active.uri == file.uri) {
-                    _activeFile.value = active.copy(name = newName)
+                if (renamed && generation == projectGeneration) {
+                    editor.renameFile(file.uri, newName)
                 }
             }
             refreshProjectTree()

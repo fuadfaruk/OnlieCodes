@@ -2,6 +2,8 @@ package com.cusapps.onliecodes.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Save
@@ -30,6 +32,9 @@ fun MainScreen(
     openFiles: List<OpenFile>,
     activeFile: OpenFile?,
     projectMissing: Boolean,
+    filesPendingSave: List<OpenFile>?,
+    isSaving: Boolean,
+    errorMessage: String?,
     onOpenFolderClick: () -> Unit,
     onSelectProjectClick: () -> Unit,
     onInitializeProjectClick: () -> Unit,
@@ -40,6 +45,10 @@ fun MainScreen(
     onTabClose: (OpenFile) -> Unit,
     onContentChange: (String) -> Unit,
     onSaveClick: () -> Unit,
+    onSaveChanges: () -> Unit,
+    onDiscardChanges: () -> Unit,
+    onCancelChanges: () -> Unit,
+    onErrorDismissed: () -> Unit,
     onCreateFile: (ProjectFile?, String) -> Unit,
     onCreateFolder: (ProjectFile?, String) -> Unit,
     onDeleteFile: (ProjectFile) -> Unit,
@@ -71,18 +80,23 @@ fun MainScreen(
                 },
                 actions = {
                     if (projectName == null) {
-                        Button(onClick = onOpenFolderClick) {
+                        Button(onClick = onOpenFolderClick, enabled = !isSaving) {
                             Icon(Icons.Default.FolderOpen, contentDescription = null)
                             Spacer(modifier = Modifier.width(4.dp))
                             Text("Open Folder")
                         }
-                    } else {
-                        IconButton(onClick = onSaveClick, enabled = activeFile?.isModified == true) {
-                            Icon(
-                                imageVector = Icons.Default.Save,
-                                contentDescription = "Save Current File",
-                                tint = if (activeFile?.isModified == true) MaterialTheme.colorScheme.primary else Color.Gray
-                            )
+                    }
+                    if (activeFile != null) {
+                        IconButton(onClick = onSaveClick, enabled = activeFile.isModified && !isSaving) {
+                            if (isSaving) {
+                                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Default.Save,
+                                    contentDescription = "Save Current File",
+                                    tint = if (activeFile.isModified) MaterialTheme.colorScheme.primary else Color.Gray
+                                )
+                            }
                         }
                     }
                     Box {
@@ -95,6 +109,7 @@ fun MainScreen(
                         ) {
                         DropdownMenuItem(
                             text = { Text("Open New Project") },
+                            enabled = !isSaving,
                             leadingIcon = { Icon(Icons.Default.CreateNewFolder, contentDescription = null) },
                             onClick = {
                                 showOptionsMenu = false
@@ -167,7 +182,8 @@ fun MainScreen(
                         openFiles = openFiles,
                         activeFile = activeFile,
                         onTabSelect = onTabSelect,
-                        onTabClose = onTabClose
+                        onTabClose = onTabClose,
+                        canCloseTabs = !isSaving
                     )
                     
                     if (activeFile != null) {
@@ -190,6 +206,66 @@ fun MainScreen(
                 }
             }
         }
+    }
+
+    if (filesPendingSave != null) {
+        AlertDialog(
+            onDismissRequest = { if (!isSaving) onCancelChanges() },
+            title = { Text("Unsaved Changes") },
+            text = {
+                Column(
+                    modifier = Modifier.heightIn(max = 280.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    if (filesPendingSave.isEmpty()) {
+                        Text("There are no unsaved changes left. Continue?")
+                    } else if (filesPendingSave.size == 1) {
+                        Text("Save changes to '${filesPendingSave.single().name}' before continuing?")
+                    } else {
+                        Text("Save changes to these ${filesPendingSave.size} files before continuing?")
+                        filesPendingSave.forEach { Text(it.name) }
+                    }
+                    if (filesPendingSave.isNotEmpty()) Text("Discard will lose unsaved changes.")
+                    if (isSaving) {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        Text("Saving changes...")
+                    }
+                    if (errorMessage != null) {
+                        Text(errorMessage, color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = onSaveChanges, enabled = !isSaving) {
+                    Text(when (filesPendingSave.size) {
+                        0 -> "Continue"
+                        1 -> "Save"
+                        else -> "Save All"
+                    })
+                }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = onCancelChanges, enabled = !isSaving) { Text("Cancel") }
+                    if (filesPendingSave.isNotEmpty()) {
+                        TextButton(
+                            onClick = onDiscardChanges,
+                            enabled = !isSaving,
+                            colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                        ) { Text("Discard") }
+                    }
+                }
+            }
+        )
+    } else if (errorMessage != null) {
+        AlertDialog(
+            onDismissRequest = onErrorDismissed,
+            title = { Text("Action Failed") },
+            text = { Text(errorMessage) },
+            confirmButton = {
+                TextButton(onClick = onErrorDismissed) { Text("OK") }
+            }
+        )
     }
 
     // Dialog: Create File
@@ -324,7 +400,7 @@ fun MainScreen(
     }
 
     // Dialog: Project Folder Missing
-    if (projectMissing) {
+    if (projectMissing && filesPendingSave == null && errorMessage == null) {
         AlertDialog(
             onDismissRequest = { onProjectMissingDismissed() },
             title = { Text("Project Folder Not Found") },
