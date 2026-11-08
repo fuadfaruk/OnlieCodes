@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -15,15 +16,19 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.lifecycleScope
 import android.webkit.MimeTypeMap
+import com.cusapps.onliecodes.model.DraftAutosaver
 import com.cusapps.onliecodes.model.EditorSession
+import com.cusapps.onliecodes.model.LocalDraftStore
 import com.cusapps.onliecodes.model.OpenFile
 import com.cusapps.onliecodes.model.ProjectFile
 import com.cusapps.onliecodes.ui.MainScreen
 import com.cusapps.onliecodes.ui.theme.OnlieCodesTheme
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.io.IOException
 
 class MainActivity : ComponentActivity() {
@@ -31,9 +36,16 @@ class MainActivity : ComponentActivity() {
     private val _projectName = MutableStateFlow<String?>(null)
     private val _projectFiles = MutableStateFlow<List<ProjectFile>>(emptyList())
     private val _projectMissing = MutableStateFlow(false)
+    private val draftStore by lazy {
+        LocalDraftStore(File(applicationContext.noBackupFilesDir, "drafts"))
+    }
+    private val drafts: DraftAutosaver by lazy {
+        DraftAutosaver(lifecycleScope, draftStore, onError = { editor.reportError(it) })
+    }
     private val editor = EditorSession(
         writeFile = { writeFile(it) },
-        switchProject = { switchProject(it) }
+        switchProject = { switchProject(it) },
+        onFilesChanged = { drafts.updateFiles(it) }
     )
 
     private var isDarkTheme by mutableStateOf(true)
@@ -93,6 +105,11 @@ class MainActivity : ComponentActivity() {
                 )
             }
         }
+    }
+
+    override fun onStop() {
+        drafts.flush()
+        super.onStop()
     }
 
     private fun toggleTheme() {
@@ -259,18 +276,40 @@ class MainActivity : ComponentActivity() {
             return
         }
         val generation = projectGeneration
-        lifecycleScope.launch(Dispatchers.IO) {
+        lifecycleScope.launch {
             try {
-                contentResolver.openInputStream(file.uri)?.use { stream ->
-                    val text = stream.bufferedReader().readText()
-                    withContext(Dispatchers.Main) {
-                        if (generation == projectGeneration) {
-                            editor.openFile(OpenFile(file.uri, file.name, text))
-                        }
-                    }
+                val text = withContext(Dispatchers.IO) {
+                    val stream = contentResolver.openInputStream(file.uri)
+                        ?: throw IOException("The document provider did not open a read stream.")
+                    stream.bufferedReader().use { it.readText() }
                 }
-            } catch (e: IOException) {
-                e.printStackTrace()
+                if (generation != projectGeneration) return@launch
+                val original = OpenFile(file.uri, file.name, text)
+                val restored = try {
+                    draftStore.restore(original)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    if (generation == projectGeneration) {
+                        editor.reportError("Could not read the local draft for '${file.name}': ${e.message ?: "Storage unavailable."}")
+                    }
+                    original
+                }
+                if (generation != projectGeneration) return@launch
+                editor.openFile(restored)
+                if (restored.isModified) {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Local draft restored for '${file.name}'. Save to update the original file.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (generation == projectGeneration) {
+                    editor.reportError("Could not open '${file.name}': ${e.message ?: "Check file access permissions."}")
+                }
             }
         }
     }
@@ -319,8 +358,9 @@ class MainActivity : ComponentActivity() {
             val doc = DocumentFile.fromSingleUri(this@MainActivity, file.uri)
             val deleted = doc?.delete() == true
             withContext(Dispatchers.Main) {
-                if (deleted && generation == projectGeneration) {
-                    editor.removeFile(file.uri)
+                if (deleted) {
+                    if (generation == projectGeneration) editor.removeFile(file.uri)
+                    drafts.removeDraft(file.uri)
                 }
             }
             refreshProjectTree()
@@ -334,7 +374,9 @@ class MainActivity : ComponentActivity() {
             val renamed = doc?.renameTo(newName) == true
             withContext(Dispatchers.Main) {
                 if (renamed && generation == projectGeneration) {
-                    editor.renameFile(file.uri, newName)
+                    val newUri = doc?.uri ?: file.uri
+                    drafts.renameDraft(file.uri, newUri)
+                    editor.renameFile(file.uri, newName, newUri)
                 }
             }
             refreshProjectTree()

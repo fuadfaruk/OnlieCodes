@@ -8,7 +8,8 @@ import kotlinx.coroutines.CancellationException
 
 class EditorSession(
     private val writeFile: suspend (OpenFile) -> Unit,
-    private val switchProject: (Uri) -> Unit
+    private val switchProject: (Uri) -> Unit,
+    private val onFilesChanged: (List<OpenFile>) -> Unit = {}
 ) {
     private sealed interface PendingAction {
         data class CloseTab(val uri: Uri) : PendingAction
@@ -32,7 +33,7 @@ class EditorSession(
 
     fun openFile(file: OpenFile) {
         if (openFiles.none { it.uri == file.uri }) {
-            openFiles = openFiles + file
+            updateFiles(openFiles + file)
         }
         activeFileUri = file.uri
     }
@@ -43,16 +44,18 @@ class EditorSession(
 
     fun updateContent(content: String) {
         val uri = activeFileUri ?: return
-        openFiles = openFiles.map { if (it.uri == uri) it.copy(content = content) else it }
+        updateFiles(openFiles.map { if (it.uri == uri) it.copy(content = content) else it })
     }
 
-    fun renameFile(uri: Uri, name: String) {
-        openFiles = openFiles.map { if (it.uri == uri) it.copy(name = name) else it }
+    fun renameFile(uri: Uri, name: String, newUri: Uri = uri) {
+        updateFiles(openFiles.map { if (it.uri == uri) it.copy(uri = newUri, name = name) else it })
+        if (activeFileUri == uri) activeFileUri = newUri
+        if (pendingAction == PendingAction.CloseTab(uri)) pendingAction = PendingAction.CloseTab(newUri)
     }
 
     // Also used after the user explicitly confirms deletion of a file.
     fun removeFile(uri: Uri) {
-        openFiles = openFiles.filter { it.uri != uri }
+        updateFiles(openFiles.filter { it.uri != uri })
         if (activeFileUri == uri) activeFileUri = openFiles.lastOrNull()?.uri
         if (pendingAction == PendingAction.CloseTab(uri)) {
             pendingAction = null
@@ -81,6 +84,15 @@ class EditorSession(
 
     fun dismissError() {
         errorMessage = null
+    }
+
+    fun reportError(message: String) {
+        if (errorMessage == null) errorMessage = message
+    }
+
+    private fun updateFiles(files: List<OpenFile>) {
+        openFiles = files
+        onFilesChanged(files)
     }
 
     suspend fun saveActiveFile() {
@@ -132,7 +144,7 @@ class EditorSession(
             is PendingAction.SwitchProject -> {
                 try {
                     switchProject(action.uri)
-                    openFiles = emptyList()
+                    updateFiles(emptyList())
                     activeFileUri = null
                 } catch (e: CancellationException) {
                     throw e
@@ -150,15 +162,15 @@ class EditorSession(
         try {
             for (file in files) {
                 // A failed or canceled write may already have truncated the document.
-                openFiles = openFiles.map {
+                updateFiles(openFiles.map {
                     if (it.uri == file.uri) it.copy(savedContent = null) else it
-                }
+                })
                 try {
                     writeFile(file)
                     // Only advance the saved baseline; never replace edits made during IO.
-                    openFiles = openFiles.map {
+                    updateFiles(openFiles.map {
                         if (it.uri == file.uri) it.copy(savedContent = file.content) else it
-                    }
+                    })
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {

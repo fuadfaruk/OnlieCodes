@@ -8,6 +8,7 @@ OnlieCodes (shown as **Onlie Codes** on Android) is a native Android code and te
 - An expandable file tree with actions to create, rename, and delete files and folders.
 - Tabbed editing with an unsaved-change indicator and a save action for the active file.
 - Save / Discard / Cancel confirmation before closing a modified tab or switching projects, with Save All for multiple modified files.
+- Automatic local drafts after a one-second typing pause, recovered when a file is reopened without overwriting its original.
 - A monospace editor with line numbers, soft wrapping, and vertical scrolling. (Still working on it)
 - Basic regex-based highlighting for common keywords, numbers, quoted strings, and C-style comments.
 - Light and dark themes through **Settings**, with the theme preference and last project folder remembered between launches.
@@ -74,7 +75,9 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 4. Edit a file and tap **Save Current File** in the top bar. A `*` beside a tab name indicates unsaved changes.
 5. Use **Options > Open New Project** to select another folder, or **Options > Settings > Dark Theme** to switch themes.
 
-**Saving is manual.** Closing a modified tab or switching to another project prompts you to Save (or Save All), Discard, or Cancel. Project-switch confirmation appears after selecting the new folder; canceling either the picker or the confirmation keeps the current project and tabs open. Failed saves leave the affected tabs open and report an error. There is no automatic draft recovery when leaving the app or if its process is stopped. File operations affect the selected folder directly, so keep backups of important files.
+**Saving original files is manual.** Modified files get independent local drafts after a one-second typing pause, and pending drafts are also written when the app goes into the background. Drafts are stored in app-private storage excluded from Android backups, not in the project folder. Reopening a file restores its draft and keeps it marked as modified until you explicitly Save. A successful Save, reverting to the saved text, or confirmed Discard removes the corresponding draft; Cancel and failed saves retain it. Drafts are not backups and are removed if app data is cleared or the app is uninstalled.
+
+Closing a modified tab or switching to another project prompts you to Save (or Save All), Discard, or Cancel. Project-switch confirmation appears after selecting the new folder; canceling either the picker or the confirmation keeps the current project and tabs open. Failed saves leave the affected tabs open and report an error. File operations affect the selected folder directly, so keep backups of important files.
 
 The app is an editor, not a compiler or execution environment. Syntax highlighting uses a shared set of regex patterns rather than language-specific parsing; it does not provide autocomplete, diagnostics, or full language support.
 
@@ -87,6 +90,7 @@ Application sources are under `app/src/main/java/com/cusapps/onliecodes/`:
 | `MainActivity.kt` | Project access, file operations, open-file state, and saved preferences. |
 | `model/EditorModels.kt` | File-tree and open-file models. |
 | `model/EditorSession.kt` | Unsaved-change tracking, guarded close/switch actions, and save coordination. |
+| `model/DraftAutosaver.kt`, `model/LocalDraftStore.kt` | Per-file draft debounce, cleanup, and atomic app-private persistence. |
 | `ui/MainScreen.kt` | Main layout, toolbar, and dialogs. |
 | `ui/components/CodeEditor.kt` | Text rendering, syntax highlighting, line numbers, and cursor offset mapping. |
 | `ui/components/FileTree.kt` | Project sidebar and file/folder actions. |
