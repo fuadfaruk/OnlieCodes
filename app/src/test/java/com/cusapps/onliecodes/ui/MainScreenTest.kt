@@ -4,6 +4,7 @@ import android.net.Uri
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import com.cusapps.onliecodes.model.OpenFile
@@ -30,17 +31,20 @@ class MainScreenTest {
         errorMessage: String? = null,
         onSave: () -> Unit = {},
         onDiscard: () -> Unit = {},
-        onCancel: () -> Unit = {}
+        onCancel: () -> Unit = {},
+        isRestoringSession: Boolean = false,
+        projectName: String? = "Project",
+        pendingFiles: List<OpenFile>? = files
     ) {
         compose.setContent {
             OnlieCodesTheme {
                 MainScreen(
-                    projectName = "Project",
+                    projectName = projectName,
                     projectFiles = emptyList(),
                     openFiles = files,
                     activeFile = files.firstOrNull(),
                     projectMissing = false,
-                    filesPendingSave = files,
+                    filesPendingSave = pendingFiles,
                     isSaving = isSaving,
                     errorMessage = errorMessage,
                     onOpenFolderClick = {},
@@ -62,7 +66,8 @@ class MainScreenTest {
                     onDeleteFile = {},
                     onRenameFile = { _, _ -> },
                     isDarkTheme = true,
-                    onToggleTheme = {}
+                    onToggleTheme = {},
+                    isRestoringSession = isRestoringSession
                 )
             }
         }
@@ -134,5 +139,24 @@ class MainScreenTest {
         compose.onNodeWithText("Cancel").assertIsEnabled()
         compose.onNodeWithText("Save").assertDoesNotExist()
         compose.onNodeWithText("Discard").assertDoesNotExist()
+    }
+
+    @Test
+    fun recoveryShowsProgressAndPreventsEditingOrSwitchingProjects() {
+        showConfirmation(
+            listOf(first),
+            errorMessage = "Recovery warning",
+            isRestoringSession = true,
+            projectName = null,
+            pendingFiles = null
+        )
+
+        compose.onNodeWithText("Restoring session...").assertExists()
+        compose.onNodeWithText("Open Folder").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("Save Current File").assertIsNotEnabled()
+        compose.onNodeWithText("edited").assertDoesNotExist()
+        compose.onNodeWithText("Recovery warning").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Options").performClick()
+        compose.onNodeWithText("Open New Project").assertIsNotEnabled()
     }
 }

@@ -19,13 +19,19 @@ import android.webkit.MimeTypeMap
 import com.cusapps.onliecodes.model.DraftAutosaver
 import com.cusapps.onliecodes.model.EditorSession
 import com.cusapps.onliecodes.model.LocalDraftStore
+import com.cusapps.onliecodes.model.LocalSessionStore
 import com.cusapps.onliecodes.model.OpenFile
 import com.cusapps.onliecodes.model.ProjectFile
+import com.cusapps.onliecodes.model.SavedSession
+import com.cusapps.onliecodes.model.SessionTab
 import com.cusapps.onliecodes.ui.MainScreen
 import com.cusapps.onliecodes.ui.theme.OnlieCodesTheme
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -39,18 +45,27 @@ class MainActivity : ComponentActivity() {
     private val draftStore by lazy {
         LocalDraftStore(File(applicationContext.noBackupFilesDir, "drafts"))
     }
+    private val sessionStore by lazy {
+        LocalSessionStore(File(applicationContext.noBackupFilesDir, "session.json"))
+    }
     private val drafts: DraftAutosaver by lazy {
         DraftAutosaver(lifecycleScope, draftStore, onError = { editor.reportError(it) })
     }
     private val editor = EditorSession(
         writeFile = { writeFile(it) },
         switchProject = { switchProject(it) },
-        onFilesChanged = { drafts.updateFiles(it) }
+        onFilesChanged = { drafts.updateFiles(it) },
+        onSessionChanged = { persistSession() }
     )
 
     private var isDarkTheme by mutableStateOf(true)
+    private var isRestoringSession by mutableStateOf(true)
 
     private var rootTreeUri: Uri? = null
+    private var sessionProjectUri: Uri? = null
+    private var lastSession: SavedSession? = null
+    private var unrestoredTabs = emptyList<IndexedValue<SessionTab>>()
+    private var sessionRestoreJob: Job? = null
     private var projectGeneration = 0L
 
     private val openFolderLauncher = registerForActivityResult(
@@ -58,13 +73,27 @@ class MainActivity : ComponentActivity() {
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
             val uri = result.data?.data ?: return@registerForActivityResult
-            if (uri != rootTreeUri) editor.requestSwitchProject(uri)
+            lifecycleScope.launch {
+                sessionRestoreJob?.join()
+                if (rootTreeUri == null && uri == sessionProjectUri) {
+                    try {
+                        openProject(uri)
+                        persistSession()
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        editor.reportError("Could not reopen the project folder: ${e.message ?: "Check folder access permissions."}")
+                    }
+                } else if (uri != rootTreeUri) {
+                    editor.requestSwitchProject(uri)
+                }
+            }
         }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        restoreLastProject()
+        restoreSession()
         isDarkTheme = getSharedPreferences("settings", Context.MODE_PRIVATE)
             .getBoolean("dark_theme", true)
         setContent {
@@ -101,7 +130,8 @@ class MainActivity : ComponentActivity() {
                     onDeleteFile = { file -> deleteFile(file) },
                     onRenameFile = { file, newName -> renameFile(file, newName) },
                     isDarkTheme = isDarkTheme,
-                    onToggleTheme = { toggleTheme() }
+                    onToggleTheme = { toggleTheme() },
+                    isRestoringSession = isRestoringSession
                 )
             }
         }
@@ -109,7 +139,44 @@ class MainActivity : ComponentActivity() {
 
     override fun onStop() {
         drafts.flush()
+        persistSession(force = true)
         super.onStop()
+    }
+
+    private fun persistSession(force: Boolean = false) {
+        if (isRestoringSession) return
+        val tabs = editor.openFiles.mapTo(mutableListOf()) { SessionTab(it.uri, it.name) }
+        // Keep unreadable entries indexed so temporary access failures do not orphan drafts.
+        val previousTabs = lastSession?.tabs.orEmpty()
+        for ((index, tab) in unrestoredTabs) {
+            val previousIndex = previousTabs.indexOfFirst { it.uri == tab.uri }
+            val position = if (previousIndex >= 0) {
+                previousTabs.take(previousIndex).count { before -> tabs.any { it.uri == before.uri } }
+            } else {
+                index.coerceAtMost(tabs.size)
+            }
+            tabs.add(position, tab)
+        }
+        val session = SavedSession(
+            sessionProjectUri,
+            tabs,
+            editor.activeFile?.uri ?: lastSession?.activeFileUri
+                ?.takeIf { uri -> unrestoredTabs.any { it.value.uri == uri } }
+        )
+        if (!force && session == lastSession) return
+        lastSession = session
+        lifecycleScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            try {
+                sessionStore.write(session)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (lastSession == session) lastSession = null
+                if (isActive) {
+                    editor.reportError("Could not save the editor session: ${e.message ?: "Storage unavailable."}")
+                }
+            }
+        }
     }
 
     private fun toggleTheme() {
@@ -135,7 +202,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun openFolderPicker() {
-        if (editor.isSaving || editor.filesPendingSave != null) return
+        if (isRestoringSession || editor.isSaving || editor.filesPendingSave != null) return
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
             addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -145,6 +212,11 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun switchProject(uri: Uri) {
+        openProject(uri)
+        unrestoredTabs = emptyList()
+    }
+
+    private fun openProject(uri: Uri) {
         val rootDoc = DocumentFile.fromTreeUri(this, uri)
         if (rootDoc == null || !rootDoc.exists() || !rootDoc.isDirectory) {
             throw IOException("The selected project folder could not be found.")
@@ -157,6 +229,7 @@ class MainActivity : ComponentActivity() {
         saveRootTreeUri(uri)
         projectGeneration++
         rootTreeUri = uri
+        sessionProjectUri = uri
         _projectName.value = name
         _projectFiles.value = emptyList()
         _projectMissing.value = false
@@ -173,23 +246,84 @@ class MainActivity : ComponentActivity() {
         _projectMissing.value = true
     }
 
-    private fun restoreLastProject() {
-        val uriString = getSharedPreferences("settings", Context.MODE_PRIVATE)
-            .getString("last_project_uri", null) ?: return
-        val uri = Uri.parse(uriString)
+    private fun restoreSession() {
+        sessionRestoreJob = lifecycleScope.launch {
+            try {
+                val saved = try {
+                    sessionStore.read()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    editor.reportError("Could not read the editor session: ${e.message ?: "Storage unavailable."}")
+                    null
+                }
+                lastSession = saved
+                sessionProjectUri = if (saved != null) saved.projectUri else {
+                    getSharedPreferences("settings", Context.MODE_PRIVATE)
+                        .getString("last_project_uri", null)?.let(Uri::parse)
+                }
+                restoreLastProject(sessionProjectUri)
+                val generation = projectGeneration
+                val files = mutableListOf<OpenFile>()
+                val unavailable = mutableListOf<IndexedValue<SessionTab>>()
+                for (tab in saved?.tabs.orEmpty().withIndex()) {
+                    try {
+                        files += loadFile(tab.value, generation)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        unavailable += tab
+                        editor.reportError("Could not restore '${tab.value.name}': ${e.message ?: "Check file access permissions."} It will be retried on the next launch.")
+                    }
+                }
+                unrestoredTabs = unavailable
+                editor.restoreFiles(files, saved?.activeFileUri)
+                val draftCount = files.count { it.isModified }
+                if (draftCount > 0) {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Restored $draftCount unsaved draft${if (draftCount == 1) "" else "s"}. Save to update the original files.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            } finally {
+                isRestoringSession = false
+            }
+            persistSession()
+            if (rootTreeUri != null) refreshProjectTree()
+        }
+    }
+
+    private suspend fun restoreLastProject(uri: Uri?) {
+        if (uri == null) return
         val hasPermission = contentResolver.persistedUriPermissions.any {
             it.uri == uri && it.isReadPermission && it.isWritePermission
         }
-        if (!hasPermission) return
-        rootTreeUri = uri
-        val rootDoc = DocumentFile.fromTreeUri(this, uri)
-        if (rootDoc == null || !rootDoc.exists()) {
-            // The stored project folder no longer exists (moved/deleted).
+        if (!hasPermission) {
             handleMissingProject()
             return
         }
-        _projectName.value = rootDoc.name ?: "Project"
-        refreshProjectTree()
+        try {
+            val name = withContext(Dispatchers.IO) {
+                val rootDoc = DocumentFile.fromTreeUri(this@MainActivity, uri)
+                if (rootDoc != null && rootDoc.exists() && rootDoc.isDirectory) {
+                    rootDoc.name ?: "Project"
+                } else {
+                    null
+                }
+            }
+            if (name == null) {
+                handleMissingProject()
+            } else {
+                rootTreeUri = uri
+                _projectName.value = name
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleMissingProject()
+            editor.reportError("Could not reopen the project folder: ${e.message ?: "Check folder access permissions."}")
+        }
     }
 
     private fun refreshProjectTree() {
@@ -270,6 +404,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun openFile(file: ProjectFile) {
+        if (isRestoringSession) return
         val existing = editor.openFiles.find { it.uri == file.uri }
         if (existing != null) {
             editor.selectFile(existing.uri)
@@ -278,24 +413,9 @@ class MainActivity : ComponentActivity() {
         val generation = projectGeneration
         lifecycleScope.launch {
             try {
-                val text = withContext(Dispatchers.IO) {
-                    val stream = contentResolver.openInputStream(file.uri)
-                        ?: throw IOException("The document provider did not open a read stream.")
-                    stream.bufferedReader().use { it.readText() }
-                }
+                val restored = loadFile(SessionTab(file.uri, file.name), generation)
                 if (generation != projectGeneration) return@launch
-                val original = OpenFile(file.uri, file.name, text)
-                val restored = try {
-                    draftStore.restore(original)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    if (generation == projectGeneration) {
-                        editor.reportError("Could not read the local draft for '${file.name}': ${e.message ?: "Storage unavailable."}")
-                    }
-                    original
-                }
-                if (generation != projectGeneration) return@launch
+                unrestoredTabs = unrestoredTabs.filterNot { it.value.uri == file.uri }
                 editor.openFile(restored)
                 if (restored.isModified) {
                     Toast.makeText(
@@ -311,6 +431,35 @@ class MainActivity : ComponentActivity() {
                     editor.reportError("Could not open '${file.name}': ${e.message ?: "Check file access permissions."}")
                 }
             }
+        }
+    }
+
+    private suspend fun loadFile(tab: SessionTab, generation: Long): OpenFile {
+        val original = try {
+            withContext(Dispatchers.IO) {
+                val stream = contentResolver.openInputStream(tab.uri)
+                    ?: throw IOException("The document provider did not open a read stream.")
+                val text = stream.bufferedReader().use { it.readText() }
+                OpenFile(tab.uri, tab.name, text)
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val draft = draftStore.read(tab.uri) ?: throw e
+            if (generation == projectGeneration) {
+                editor.reportError("The original file '${tab.name}' is unavailable. Its local draft was restored; check file access before saving.")
+            }
+            return OpenFile(tab.uri, tab.name, draft, savedContent = null)
+        }
+        return try {
+            draftStore.restore(original)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            if (generation == projectGeneration) {
+                editor.reportError("Could not read the local draft for '${tab.name}': ${e.message ?: "Storage unavailable."}")
+            }
+            original
         }
     }
 
@@ -359,7 +508,10 @@ class MainActivity : ComponentActivity() {
             val deleted = doc?.delete() == true
             withContext(Dispatchers.Main) {
                 if (deleted) {
-                    if (generation == projectGeneration) editor.removeFile(file.uri)
+                    if (generation == projectGeneration) {
+                        unrestoredTabs = unrestoredTabs.filterNot { it.value.uri == file.uri }
+                        editor.removeFile(file.uri)
+                    }
                     drafts.removeDraft(file.uri)
                 }
             }
@@ -375,6 +527,13 @@ class MainActivity : ComponentActivity() {
             withContext(Dispatchers.Main) {
                 if (renamed && generation == projectGeneration) {
                     val newUri = doc?.uri ?: file.uri
+                    unrestoredTabs = unrestoredTabs.map {
+                        if (it.value.uri == file.uri) {
+                            IndexedValue(it.index, SessionTab(newUri, newName))
+                        } else {
+                            it
+                        }
+                    }
                     drafts.renameDraft(file.uri, newUri)
                     editor.renameFile(file.uri, newName, newUri)
                 }

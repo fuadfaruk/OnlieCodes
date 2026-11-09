@@ -54,7 +54,8 @@ fun MainScreen(
     onDeleteFile: (ProjectFile) -> Unit,
     onRenameFile: (ProjectFile, String) -> Unit,
     isDarkTheme: Boolean,
-    onToggleTheme: () -> Unit
+    onToggleTheme: () -> Unit,
+    isRestoringSession: Boolean = false
 ) {
     var showSidebar by remember { mutableStateOf(true) }
     var showOptionsMenu by remember { mutableStateOf(false) }
@@ -80,14 +81,14 @@ fun MainScreen(
                 },
                 actions = {
                     if (projectName == null) {
-                        Button(onClick = onOpenFolderClick, enabled = !isSaving) {
+                        Button(onClick = onOpenFolderClick, enabled = !isSaving && !isRestoringSession) {
                             Icon(Icons.Default.FolderOpen, contentDescription = null)
                             Spacer(modifier = Modifier.width(4.dp))
                             Text("Open Folder")
                         }
                     }
                     if (activeFile != null) {
-                        IconButton(onClick = onSaveClick, enabled = activeFile.isModified && !isSaving) {
+                        IconButton(onClick = onSaveClick, enabled = activeFile.isModified && !isSaving && !isRestoringSession) {
                             if (isSaving) {
                                 CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
                             } else {
@@ -109,7 +110,7 @@ fun MainScreen(
                         ) {
                         DropdownMenuItem(
                             text = { Text("Open New Project") },
-                            enabled = !isSaving,
+                            enabled = !isSaving && !isRestoringSession,
                             leadingIcon = { Icon(Icons.Default.CreateNewFolder, contentDescription = null) },
                             onClick = {
                                 showOptionsMenu = false
@@ -144,7 +145,7 @@ fun MainScreen(
                 .background(palette.background)
         ) {
             // Sidebar Navigation Tree
-            if (showSidebar && projectName != null) {
+            if (showSidebar && projectName != null && !isRestoringSession) {
                 FileTree(
                     projectFiles = projectFiles,
                     onFileClick = onFileClick,
@@ -177,7 +178,17 @@ fun MainScreen(
                     .fillMaxHeight()
                     .weight(1f)
             ) {
-                if (openFiles.isNotEmpty()) {
+                if (isRestoringSession) {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            CircularProgressIndicator()
+                            Text("Restoring session...", color = palette.muted)
+                        }
+                    }
+                } else if (openFiles.isNotEmpty()) {
                     FileTabs(
                         openFiles = openFiles,
                         activeFile = activeFile,
@@ -257,7 +268,7 @@ fun MainScreen(
                 }
             }
         )
-    } else if (errorMessage != null) {
+    } else if (errorMessage != null && !isRestoringSession) {
         AlertDialog(
             onDismissRequest = onErrorDismissed,
             title = { Text("Action Failed") },
@@ -400,12 +411,12 @@ fun MainScreen(
     }
 
     // Dialog: Project Folder Missing
-    if (projectMissing && filesPendingSave == null && errorMessage == null) {
+    if (projectMissing && !isRestoringSession && filesPendingSave == null && errorMessage == null) {
         AlertDialog(
             onDismissRequest = { onProjectMissingDismissed() },
             title = { Text("Project Folder Not Found") },
             text = {
-                Text("The current project folder could not be found. It may have been moved or deleted. Select a new project folder or initialize a new project to continue.")
+                Text("The current project folder is unavailable. It may have been moved or deleted, or its access permission was removed. Recovered drafts are kept open. Select the folder again or choose a new project to continue.")
             },
             confirmButton = {
                 Button(onClick = onSelectProjectClick) { Text("Select New Project Folder") }

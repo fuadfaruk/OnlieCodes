@@ -9,7 +9,8 @@ import kotlinx.coroutines.CancellationException
 class EditorSession(
     private val writeFile: suspend (OpenFile) -> Unit,
     private val switchProject: (Uri) -> Unit,
-    private val onFilesChanged: (List<OpenFile>) -> Unit = {}
+    private val onFilesChanged: (List<OpenFile>) -> Unit = {},
+    private val onSessionChanged: () -> Unit = {}
 ) {
     private sealed interface PendingAction {
         data class CloseTab(val uri: Uri) : PendingAction
@@ -33,13 +34,21 @@ class EditorSession(
 
     fun openFile(file: OpenFile) {
         if (openFiles.none { it.uri == file.uri }) {
-            updateFiles(openFiles + file)
+            updateFiles(openFiles + file, file.uri)
+        } else {
+            selectFile(file.uri)
         }
-        activeFileUri = file.uri
+    }
+
+    fun restoreFiles(files: List<OpenFile>, activeUri: Uri?) {
+        updateFiles(files.distinctBy { it.uri }, activeUri)
     }
 
     fun selectFile(uri: Uri) {
-        if (openFiles.any { it.uri == uri }) activeFileUri = uri
+        if (activeFileUri != uri && openFiles.any { it.uri == uri }) {
+            activeFileUri = uri
+            onSessionChanged()
+        }
     }
 
     fun updateContent(content: String) {
@@ -48,19 +57,20 @@ class EditorSession(
     }
 
     fun renameFile(uri: Uri, name: String, newUri: Uri = uri) {
-        updateFiles(openFiles.map { if (it.uri == uri) it.copy(uri = newUri, name = name) else it })
-        if (activeFileUri == uri) activeFileUri = newUri
         if (pendingAction == PendingAction.CloseTab(uri)) pendingAction = PendingAction.CloseTab(newUri)
+        updateFiles(
+            openFiles.map { if (it.uri == uri) it.copy(uri = newUri, name = name) else it },
+            if (activeFileUri == uri) newUri else activeFileUri
+        )
     }
 
     // Also used after the user explicitly confirms deletion of a file.
     fun removeFile(uri: Uri) {
-        updateFiles(openFiles.filter { it.uri != uri })
-        if (activeFileUri == uri) activeFileUri = openFiles.lastOrNull()?.uri
         if (pendingAction == PendingAction.CloseTab(uri)) {
             pendingAction = null
             errorMessage = null
         }
+        updateFiles(openFiles.filter { it.uri != uri })
     }
 
     fun requestCloseTab(uri: Uri) {
@@ -90,9 +100,12 @@ class EditorSession(
         if (errorMessage == null) errorMessage = message
     }
 
-    private fun updateFiles(files: List<OpenFile>) {
+    private fun updateFiles(files: List<OpenFile>, activeUri: Uri? = activeFileUri) {
         openFiles = files
+        activeFileUri = activeUri?.takeIf { uri -> files.any { it.uri == uri } }
+            ?: files.lastOrNull()?.uri
         onFilesChanged(files)
+        onSessionChanged()
     }
 
     suspend fun saveActiveFile() {
@@ -144,8 +157,7 @@ class EditorSession(
             is PendingAction.SwitchProject -> {
                 try {
                     switchProject(action.uri)
-                    updateFiles(emptyList())
-                    activeFileUri = null
+                    updateFiles(emptyList(), null)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
