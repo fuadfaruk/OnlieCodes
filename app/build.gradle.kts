@@ -38,6 +38,8 @@ android {
     }
     testOptions {
         unitTests.isIncludeAndroidResources = true
+        // Robolectric's SAF stream shadows inspect Java file descriptors on JDK 17.
+        unitTests.all { it.jvmArgs("--add-opens=java.base/java.io=ALL-UNNAMED") }
     }
     packaging {
         resources {

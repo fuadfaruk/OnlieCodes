@@ -1,7 +1,6 @@
 package com.cusapps.onliecodes.model
 
 import android.net.Uri
-import android.util.AtomicFile
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
@@ -12,20 +11,23 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.FileNotFoundException
+import java.io.FileOutputStream
 import java.io.IOException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption.ATOMIC_MOVE
+import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 
 class LocalSessionStore(
-    file: File,
+    private val file: File,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO
 ) {
-    private val atomicFile = AtomicFile(file)
-
     suspend fun read(): SavedSession? = diskMutex.withLock {
         withContext(ioDispatcher) {
+            File("${file.path}.new").delete()
             val text = try {
-                atomicFile.openRead().bufferedReader(Charsets.UTF_8).use { it.readText() }
+                file.bufferedReader(Charsets.UTF_8).use { it.readText() }
             } catch (e: FileNotFoundException) {
-                if (atomicFile.baseFile.exists()) throw e
+                if (file.exists()) throw e
                 return@withContext null
             }
             val json = JSONObject(text)
@@ -46,6 +48,10 @@ class LocalSessionStore(
         // Enter the queue before dispatching IO, including across Activity instances.
         diskMutex.withLock {
             withContext(ioDispatcher) {
+                val parent = file.parentFile
+                if (parent != null && !parent.isDirectory && !parent.mkdirs()) {
+                    throw IOException("Could not create the local session directory.")
+                }
                 val json = JSONObject()
                     .put("version", 1)
                     .put("projectUri", session.projectUri?.toString() ?: JSONObject.NULL)
@@ -55,13 +61,15 @@ class LocalSessionStore(
                             put(JSONObject().put("uri", tab.uri.toString()).put("name", tab.name))
                         }
                     })
-                val stream = atomicFile.startWrite()
+                val temporary = File("${file.path}.new")
                 try {
-                    stream.write(json.toString().toByteArray(Charsets.UTF_8))
-                    atomicFile.finishWrite(stream)
-                } catch (e: Exception) {
-                    atomicFile.failWrite(stream)
-                    throw e
+                    FileOutputStream(temporary).use { stream ->
+                        stream.write(json.toString().toByteArray(Charsets.UTF_8))
+                        stream.fd.sync()
+                    }
+                    Files.move(temporary.toPath(), file.toPath(), ATOMIC_MOVE, REPLACE_EXISTING)
+                } finally {
+                    temporary.delete()
                 }
             }
         }

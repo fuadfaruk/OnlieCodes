@@ -21,10 +21,9 @@ import com.cusapps.onliecodes.model.SessionTab
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.StandardTestDispatcher
-import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.*
@@ -53,6 +52,7 @@ class MainActivitySessionTest {
 
     private val treeUri = DocumentsContract.buildTreeDocumentUri("session.test", "project")
     private val permissions = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+    private val mainDispatcher = StandardTestDispatcher()
     private val controllers = mutableListOf<ActivityController<MainActivity>>()
     private lateinit var application: Application
     private lateinit var provider: ProjectProvider
@@ -63,7 +63,7 @@ class MainActivitySessionTest {
 
     @Before
     fun setUp() {
-        Dispatchers.setMain(UnconfinedTestDispatcher())
+        Dispatchers.setMain(mainDispatcher)
         application = RuntimeEnvironment.getApplication()
         project = temporaryFolder.newFolder("project")
         provider = ProjectProvider(project)
@@ -81,12 +81,17 @@ class MainActivitySessionTest {
 
     @After
     fun tearDown() {
-        controllers.toList().forEach(::stopActivity)
-        Dispatchers.resetMain()
+        try {
+            runTest(mainDispatcher) {
+                controllers.toList().forEach { stopActivity(it) }
+            }
+        } finally {
+            Dispatchers.resetMain()
+        }
     }
 
     @Test
-    fun startupRestoresOrderedNestedTabsActiveFileAndUnsavedDraftsWithoutWritingOriginals() = runBlocking {
+    fun startupRestoresOrderedNestedTabsActiveFileAndUnsavedDraftsWithoutWritingOriginals() = runTest(mainDispatcher) {
         val first = file("first.kt", "first original")
         val nested = file("nested/second.kt", "second original")
         val third = file("third.kt", "third original")
@@ -97,7 +102,7 @@ class MainActivitySessionTest {
 
         val current = editor(startActivity())
 
-        assertEquals(saved.tabs.map { it.uri }, current.openFiles.map { it.uri })
+        assertEquals(current.errorMessage, saved.tabs.map { it.uri }, current.openFiles.map { it.uri })
         assertEquals(first.uri, current.activeFile?.uri)
         assertEquals("unsaved first", current.activeFile?.content)
         assertEquals(first.content, current.activeFile?.savedContent)
@@ -111,7 +116,7 @@ class MainActivitySessionTest {
     }
 
     @Test
-    fun backgroundFlushRestoresLatestEditsAndSelectionInFreshActivity() = runBlocking {
+    fun backgroundFlushRestoresLatestEditsAndSelectionInFreshActivity() = runTest(mainDispatcher) {
         val first = file("first.kt", "first")
         val second = file("second.kt", "second")
         sessions.write(snapshot(emptyList(), null))
@@ -142,7 +147,7 @@ class MainActivitySessionTest {
     }
 
     @Test
-    fun_closedAndDiscardedTabsDoNotReturnAndManualSaveDoesNotRecoverStaleDraft() = runBlocking {
+    fun closedAndDiscardedTabsDoNotReturnAndManualSaveDoesNotRecoverStaleDraft() = runTest(mainDispatcher) {
         val clean = file("clean.kt", "clean")
         val discarded = file("discarded.kt", "discarded original")
         val saved = file("saved.kt", "saved original")
@@ -170,7 +175,7 @@ class MainActivitySessionTest {
     }
 
     @Test
-    fun_missingOriginalRecoversEmptyDraftAndUnreadableTabsRemainIndexedForRetry() = runBlocking {
+    fun missingOriginalRecoversEmptyDraftAndUnreadableTabsRemainIndexedForRetry() = runTest(mainDispatcher) {
         val clean = file("clean.kt", "clean")
         val missingDraft = OpenFile(documentUri("missing.kt"), "missing.kt", "old original")
         val unavailable = OpenFile(documentUri("later.kt"), "later.kt", "old original")
@@ -198,7 +203,7 @@ class MainActivitySessionTest {
     }
 
     @Test
-    fun_reselectingProjectAfterPermissionLossKeepsRecoveredDraftsInsteadOfDiscardingThem() = runBlocking {
+    fun reselectingProjectAfterPermissionLossKeepsRecoveredDraftsInsteadOfDiscardingThem() = runTest(mainDispatcher) {
         val first = file("first.kt", "first original")
         val second = file("second.kt", "second original")
         sessions.write(snapshot(listOf(first, second), first.uri))
@@ -216,6 +221,7 @@ class MainActivitySessionTest {
         val launched = shadowOf(initial.get()).nextStartedActivityForResult
         provider.denyReads = false
         shadowOf(initial.get()).receiveResult(launched.intent, Activity.RESULT_OK, Intent().setData(treeUri))
+        mainDispatcher.scheduler.runCurrent()
 
         assertNull(current.filesPendingSave)
         assertEquals("unsaved first", current.activeFile?.content)
@@ -229,7 +235,7 @@ class MainActivitySessionTest {
     }
 
     @Test
-    fun_corruptSessionFallsBackToRememberedProjectWithoutDeletingDraftText() = runBlocking {
+    fun corruptSessionFallsBackToRememberedProjectWithoutDeletingDraftText() = runTest(mainDispatcher) {
         val first = file("first.kt", "first")
         application.getSharedPreferences("settings", Context.MODE_PRIVATE).edit()
             .putString("last_project_uri", treeUri.toString()).commit()
@@ -245,22 +251,20 @@ class MainActivitySessionTest {
     }
 
     @Test
-    fun_stoppingBeforeRecoveryStartsDoesNotReplaceSavedSessionWithEmptyState() = runBlocking {
+    fun stoppingBeforeRecoveryStartsDoesNotReplaceSavedSessionWithEmptyState() = runTest(mainDispatcher) {
         val first = file("first.kt", "first")
         val saved = snapshot(listOf(first), first.uri)
         sessions.write(saved)
         drafts.write(first.uri, "preserved draft")
-        val dispatcher = StandardTestDispatcher()
-        Dispatchers.setMain(dispatcher)
         val initial = Robolectric.buildActivity(MainActivity::class.java).create().start().resume()
         controllers += initial
 
-        stopActivity(initial)
-        dispatcher.scheduler.runCurrent()
+        initial.pause().stop().destroy()
+        controllers -= initial
+        mainDispatcher.scheduler.runCurrent()
 
         assertEquals(saved, sessions.read())
         assertEquals("preserved draft", drafts.read(first.uri))
-        Dispatchers.setMain(UnconfinedTestDispatcher())
         assertEquals("preserved draft", editor(startActivity()).activeFile?.content)
     }
 
@@ -277,20 +281,18 @@ class MainActivitySessionTest {
         treeUri, files.map { SessionTab(it.uri, it.name) }, activeUri
     )
 
-    private fun startActivity(): ActivityController<MainActivity> {
+    private suspend fun startActivity(): ActivityController<MainActivity> {
         val controller = Robolectric.buildActivity(MainActivity::class.java).create().start().resume()
         controllers += controller
-        runBlocking { ReflectionHelpers.getField<Job>(controller.get(), "sessionRestoreJob").join() }
+        ReflectionHelpers.getField<Job>(controller.get(), "sessionRestoreJob").join()
         return controller
     }
 
-    private fun stopActivity(controller: ActivityController<MainActivity>) {
+    private suspend fun stopActivity(controller: ActivityController<MainActivity>) {
         controller.pause().stop().destroy()
         controllers -= controller
-        runBlocking {
-            drafts.read(Uri.EMPTY)
-            sessions.read()
-        }
+        drafts.read(Uri.EMPTY)
+        runCatching { sessions.read() }
     }
 
     private fun editor(controller: ActivityController<MainActivity>): EditorSession =

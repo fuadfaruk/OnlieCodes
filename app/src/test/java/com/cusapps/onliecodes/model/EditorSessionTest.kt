@@ -438,4 +438,191 @@ class EditorSessionTest {
             assertNull(switchedTo)
         }
     }
+
+    @Test
+    fun sessionCallbacksObserveStableFilesAndSelectionOnlyChanges() {
+        val fileSnapshots = mutableListOf<Pair<List<OpenFile>, Uri?>>()
+        val sessionSnapshots = mutableListOf<Pair<List<OpenFile>, Uri?>>()
+        editor = EditorSession(
+            writeFile = { writes += it },
+            switchProject = { switchedTo = it },
+            onFilesChanged = {
+                assertEquals(it, editor.openFiles)
+                fileSnapshots += it to editor.activeFile?.uri
+            },
+            onSessionChanged = { sessionSnapshots += editor.openFiles to editor.activeFile?.uri }
+        )
+
+        editor.openFile(first)
+        editor.openFile(second)
+
+        val openingSnapshots = listOf(listOf(first) to first.uri, listOf(first, second) to second.uri)
+        assertEquals(openingSnapshots, fileSnapshots)
+        assertEquals(openingSnapshots, sessionSnapshots)
+        fileSnapshots.clear()
+        sessionSnapshots.clear()
+        val before = editor.openFiles
+
+        editor.selectFile(first.uri)
+        editor.selectFile(first.uri)
+        editor.selectFile(Uri.parse("content://files/missing.kt"))
+        editor.openFile(second.copy(name = "ignored.kt", content = "ignored replacement"))
+
+        assertSame(before, editor.openFiles)
+        assertEquals(listOf(before to first.uri, before to second.uri), sessionSnapshots)
+        assertTrue(fileSnapshots.isEmpty())
+        assertTrue(writes.isEmpty())
+    }
+
+    @Test
+    fun restoreNotifiesOnceWithOrderedUniqueFilesAndRequestedSelection() {
+        val snapshots = recordSessionChanges()
+        editor.openFile(OpenFile(Uri.parse("content://files/stale.kt"), "stale.kt", "stale"))
+        snapshots.clear()
+        val recovered = first.copy(content = "recovered unsaved draft")
+        val files = listOf(recovered, second)
+
+        editor.restoreFiles(files + recovered.copy(name = "duplicate.kt", content = "stale duplicate"), first.uri)
+
+        assertEquals(files, editor.openFiles)
+        assertEquals(recovered, editor.activeFile)
+        assertTrue(editor.activeFile!!.isModified)
+        assertEquals(listOf(files to first.uri), snapshots)
+        assertTrue(writes.isEmpty())
+        assertNull(switchedTo)
+    }
+
+    @Test
+    fun restoreFallsBackToLastUniqueFileAndClearsSelectionForEmptyFiles() {
+        val snapshots = recordSessionChanges()
+
+        editor.restoreFiles(listOf(first, second, first.copy(name = "duplicate.kt")), Uri.parse("content://files/missing.kt"))
+        assertEquals(second, editor.activeFile)
+        editor.restoreFiles(listOf(second, first), null)
+        assertEquals(first, editor.activeFile)
+        editor.restoreFiles(emptyList(), first.uri)
+
+        assertEquals(
+            listOf(
+                listOf(first, second) to second.uri,
+                listOf(second, first) to first.uri,
+                emptyList<OpenFile>() to null
+            ),
+            snapshots
+        )
+        assertTrue(editor.openFiles.isEmpty())
+        assertNull(editor.activeFile)
+        assertTrue(writes.isEmpty())
+    }
+
+    @Test
+    fun activeRenameAndRemovalCallbacksObserveUpdatedUrisAndFallbackSelection() {
+        val snapshots = recordSessionChanges()
+        editor.restoreFiles(listOf(first, second), first.uri)
+        snapshots.clear()
+        val renamed = first.copy(uri = Uri.parse("content://files/renamed.kt"), name = "renamed.kt")
+
+        editor.renameFile(first.uri, renamed.name, newUri = renamed.uri)
+        editor.removeFile(renamed.uri)
+        editor.removeFile(second.uri)
+
+        assertEquals(
+            listOf(
+                listOf(renamed, second) to renamed.uri,
+                listOf(second) to second.uri,
+                emptyList<OpenFile>() to null
+            ),
+            snapshots
+        )
+        assertTrue(editor.openFiles.isEmpty())
+        assertNull(editor.activeFile)
+        assertTrue(writes.isEmpty())
+    }
+
+    @Test
+    fun projectSwitchOnlyNotifiesAfterSuccessWithNewProjectAndClearedTabs() {
+        val originalProject = Uri.parse("content://files/tree/current")
+        var currentProject = originalProject
+        var failSwitch = true
+        val snapshots = mutableListOf<SavedSession>()
+        editor = EditorSession(
+            writeFile = { writes += it },
+            switchProject = {
+                if (failSwitch) throw IOException("Folder missing")
+                currentProject = it
+                switchedTo = it
+            },
+            onSessionChanged = {
+                snapshots += SavedSession(
+                    currentProject,
+                    editor.openFiles.map { SessionTab(it.uri, it.name) },
+                    editor.activeFile?.uri
+                )
+            }
+        )
+        openModified(first)
+        openModified(second)
+        editor.selectFile(first.uri)
+        val before = editor.openFiles
+        snapshots.clear()
+
+        editor.requestSwitchProject(nextProject)
+        assertTrue(snapshots.isEmpty())
+        editor.cancelPendingAction()
+        assertTrue(snapshots.isEmpty())
+        assertEquals(before, editor.openFiles)
+        assertEquals(first.uri, editor.activeFile?.uri)
+        assertNull(switchedTo)
+
+        editor.requestSwitchProject(nextProject)
+        editor.discardPendingChanges()
+        assertTrue(snapshots.isEmpty())
+        assertEquals(before, editor.openFiles)
+        assertEquals(first.uri, editor.activeFile?.uri)
+        assertEquals(originalProject, currentProject)
+        assertTrue(editor.errorMessage!!.contains("Folder missing"))
+
+        failSwitch = false
+        editor.requestSwitchProject(nextProject)
+        editor.discardPendingChanges()
+
+        assertEquals(listOf(SavedSession(nextProject, emptyList(), null)), snapshots)
+        assertEquals(nextProject, switchedTo)
+        assertTrue(editor.openFiles.isEmpty())
+        assertNull(editor.activeFile)
+        assertNull(editor.errorMessage)
+        assertTrue(writes.isEmpty())
+    }
+
+    @Test
+    fun canceledProjectAccessPropagatesWithoutNotifyingOrDiscardingFiles() {
+        val snapshots = recordSessionChanges(switchProject = { throw CancellationException("Canceled project access") })
+        val files = listOf(first, second)
+        editor.restoreFiles(files, first.uri)
+        snapshots.clear()
+
+        try {
+            editor.requestSwitchProject(nextProject)
+            fail("Cancellation should propagate")
+        } catch (_: CancellationException) {
+            assertTrue(snapshots.isEmpty())
+            assertEquals(files, editor.openFiles)
+            assertEquals(first.uri, editor.activeFile?.uri)
+            assertNull(editor.errorMessage)
+            assertNull(switchedTo)
+            assertTrue(writes.isEmpty())
+        }
+    }
+
+    private fun recordSessionChanges(
+        switchProject: (Uri) -> Unit = { switchedTo = it }
+    ): MutableList<Pair<List<OpenFile>, Uri?>> {
+        val snapshots = mutableListOf<Pair<List<OpenFile>, Uri?>>()
+        editor = EditorSession(
+            writeFile = { writes += it },
+            switchProject = switchProject,
+            onSessionChanged = { snapshots += editor.openFiles to editor.activeFile?.uri }
+        )
+        return snapshots
+    }
 }
