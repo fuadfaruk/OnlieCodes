@@ -40,8 +40,10 @@ import org.robolectric.android.controller.ActivityController
 import org.robolectric.annotation.Config
 import org.robolectric.shadows.ShadowContentResolver
 import org.robolectric.util.ReflectionHelpers
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileNotFoundException
+import java.io.IOException
 
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
@@ -175,6 +177,99 @@ class MainActivitySessionTest {
     }
 
     @Test
+    fun providerOpenFailuresKeepModifiedBuffersAndDraftsUntilSuccessfulRetry() = runTest(mainDispatcher) {
+        sessions.write(snapshot(emptyList(), null))
+        val current = editor(startActivity())
+        val failures = listOf(null, SecurityException("Permission denied"), FileNotFoundException("Document unavailable"))
+        for ((index, failure) in failures.withIndex()) {
+            val original = file("failure$index.kt", "original")
+            val content = "unsaved edit $index"
+            current.openFile(original)
+            current.updateContent(content)
+            drafts.write(original.uri, content)
+            provider.nullWriteStream = failure == null
+            provider.writeFailure = failure
+
+            current.saveActiveFile()
+
+            assertEquals("Save Failed", current.errorTitle)
+            assertTrue(current.errorMessage!!.contains(original.name))
+            assertTrue(current.errorMessage!!.contains(failure?.message ?: "did not open a write stream"))
+            assertTrue(current.activeFile!!.isModified)
+            assertNull(current.activeFile?.savedContent)
+            assertEquals(content, current.activeFile?.content)
+            assertEquals(content, drafts.read(original.uri))
+            assertEquals("original", File(project, original.name).readText())
+            assertFalse(current.isSaving)
+
+            current.dismissError()
+            assertTrue(current.activeFile!!.isModified)
+            provider.nullWriteStream = false
+            provider.writeFailure = null
+            current.saveActiveFile()
+
+            assertFalse(current.activeFile!!.isModified)
+            assertEquals(content, File(project, original.name).readText())
+            assertNull(drafts.read(original.uri))
+            assertNull(current.errorMessage)
+            current.requestCloseTab(original.uri)
+        }
+    }
+
+    @Test
+    fun writeFlushAndCloseFailuresKeepModifiedBuffersAndDraftsUntilSuccessfulRetry() = runTest(mainDispatcher) {
+        sessions.write(snapshot(emptyList(), null))
+        val current = editor(startActivity())
+        for (operation in listOf("write", "flush", "close")) {
+            val original = file("$operation.kt", "original")
+            val content = "unsaved $operation edit"
+            current.openFile(original)
+            current.updateContent(content)
+            drafts.write(original.uri, content)
+            var closed = false
+            val failingStream = object : ByteArrayOutputStream() {
+                override fun write(buffer: ByteArray, offset: Int, length: Int) {
+                    if (operation == "write") throw IOException("Write failed")
+                    super.write(buffer, offset, length)
+                }
+
+                override fun flush() {
+                    if (operation == "flush") throw IOException("Flush failed")
+                    super.flush()
+                }
+
+                override fun close() {
+                    closed = true
+                    if (operation == "close") throw IOException("Close failed")
+                    super.close()
+                }
+            }
+            shadowOf(application.contentResolver).registerOutputStream(original.uri, failingStream)
+
+            current.saveActiveFile()
+
+            assertEquals(operation, "Save Failed", current.errorTitle)
+            assertTrue(current.errorMessage!!.contains("${operation.replaceFirstChar { it.uppercase() }} failed"))
+            assertTrue(current.activeFile!!.isModified)
+            assertNull(current.activeFile?.savedContent)
+            assertEquals(content, current.activeFile?.content)
+            assertEquals(content, drafts.read(original.uri))
+            assertTrue(closed)
+            assertFalse(current.isSaving)
+
+            val successfulStream = ByteArrayOutputStream()
+            shadowOf(application.contentResolver).registerOutputStream(original.uri, successfulStream)
+            current.saveActiveFile()
+
+            assertEquals(content, successfulStream.toString("UTF-8"))
+            assertFalse(current.activeFile!!.isModified)
+            assertNull(drafts.read(original.uri))
+            assertNull(current.errorMessage)
+            current.requestCloseTab(original.uri)
+        }
+    }
+
+    @Test
     fun missingOriginalRecoversEmptyDraftAndUnreadableTabsRemainIndexedForRetry() = runTest(mainDispatcher) {
         val clean = file("clean.kt", "clean")
         val missingDraft = OpenFile(documentUri("missing.kt"), "missing.kt", "old original")
@@ -300,6 +395,8 @@ class MainActivitySessionTest {
 
     private class ProjectProvider(private val directory: File) : ContentProvider() {
         var denyReads = false
+        var nullWriteStream = false
+        var writeFailure: Exception? = null
 
         override fun onCreate() = true
 
@@ -331,8 +428,12 @@ class MainActivitySessionTest {
             }
         }
 
-        override fun openFile(uri: Uri, mode: String): ParcelFileDescriptor {
+        override fun openFile(uri: Uri, mode: String): ParcelFileDescriptor? {
             if (denyReads) throw SecurityException("Permission denied")
+            if ('w' in mode) {
+                writeFailure?.let { throw it }
+                if (nullWriteStream) return null
+            }
             val target = documentFile(uri)
             if (!target.exists()) throw FileNotFoundException("Document unavailable")
             return ParcelFileDescriptor.open(target, ParcelFileDescriptor.parseMode(mode))

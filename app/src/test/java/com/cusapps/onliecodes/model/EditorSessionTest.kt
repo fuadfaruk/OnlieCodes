@@ -262,8 +262,12 @@ class EditorSessionTest {
 
     @Test
     fun manualSaveFailureReportsErrorWithoutMarkingFileClean() = runBlocking {
+        var failWrite = true
         editor = EditorSession(
-            writeFile = { throw IOException("Unable to open write stream") },
+            writeFile = {
+                if (failWrite) throw IOException("Unable to open write stream")
+                writes += it
+            },
             switchProject = { switchedTo = it }
         )
         openModified(first)
@@ -272,7 +276,86 @@ class EditorSessionTest {
 
         assertTrue(editor.activeFile!!.isModified)
         assertEquals("first edited", editor.activeFile?.content)
+        assertNull(editor.activeFile?.savedContent)
+        assertEquals("Save Failed", editor.errorTitle)
         assertTrue(editor.errorMessage!!.contains("first.kt"))
+        assertTrue(editor.errorMessage!!.contains("Unable to open write stream"))
+        assertTrue(editor.errorMessage!!.contains("Your changes are still unsaved"))
+        assertFalse(editor.isSaving)
+
+        editor.dismissError()
+        assertNull(editor.errorMessage)
+        assertTrue(editor.activeFile!!.isModified)
+        failWrite = false
+        editor.saveActiveFile()
+
+        assertEquals("first edited", writes.single().content)
+        assertEquals("first edited", editor.activeFile?.savedContent)
+        assertFalse(editor.activeFile!!.isModified)
+        assertNull(editor.errorMessage)
+        assertEquals("Action Failed", editor.errorTitle)
+    }
+
+    @Test
+    fun backgroundErrorsDuringSaveAllRemainVisibleOnSuccessAndFailure() = runBlocking {
+        val backgroundError = "Could not remove a local draft: Storage unavailable."
+        for (failWrite in listOf(true, false)) {
+            switchedTo = null
+            editor = EditorSession(
+                writeFile = {
+                    if (it.uri == first.uri) editor.reportError(backgroundError)
+                    if (failWrite) throw IOException("Storage full")
+                },
+                switchProject = { switchedTo = it }
+            )
+            openModified(first)
+            openModified(second)
+            editor.requestSwitchProject(nextProject)
+
+            editor.savePendingChanges()
+
+            assertTrue(editor.errorMessage!!.contains(backgroundError))
+            assertFalse(editor.isSaving)
+            if (failWrite) {
+                assertEquals("Save Failed", editor.errorTitle)
+                assertTrue(editor.errorMessage!!.contains("first.kt"))
+                assertTrue(editor.errorMessage!!.contains("second.kt"))
+                assertTrue(editor.openFiles.all { it.isModified })
+                assertEquals(2, editor.filesPendingSave?.size)
+                assertNull(switchedTo)
+            } else {
+                assertEquals("Action Failed", editor.errorTitle)
+                assertTrue(editor.openFiles.isEmpty())
+                assertNull(editor.filesPendingSave)
+                assertEquals(nextProject, switchedTo)
+            }
+        }
+    }
+
+    @Test
+    fun renamingUriDuringFailedConfirmationSaveKeepsErrorAndModifiedTab() = runBlocking {
+        val releaseWrite = CompletableDeferred<Unit>()
+        editor = EditorSession(
+            writeFile = { releaseWrite.await(); throw IOException("Write failed") },
+            switchProject = { switchedTo = it }
+        )
+        openModified(first)
+        editor.requestCloseTab(first.uri)
+        val saving = launch(start = CoroutineStart.UNDISPATCHED) { editor.savePendingChanges() }
+        val renamedUri = Uri.parse("content://files/renamed.kt")
+
+        editor.renameFile(first.uri, "renamed.kt", renamedUri)
+        editor.updateContent("newer edit")
+        releaseWrite.complete(Unit)
+        saving.join()
+
+        assertEquals(renamedUri, editor.activeFile?.uri)
+        assertEquals("newer edit", editor.activeFile?.content)
+        assertNull(editor.activeFile?.savedContent)
+        assertTrue(editor.activeFile!!.isModified)
+        assertEquals(listOf(renamedUri), editor.filesPendingSave?.map { it.uri })
+        assertEquals("Save Failed", editor.errorTitle)
+        assertTrue(editor.errorMessage!!.contains("Write failed"))
         assertFalse(editor.isSaving)
     }
 

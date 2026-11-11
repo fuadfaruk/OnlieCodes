@@ -35,6 +35,7 @@ fun MainScreen(
     filesPendingSave: List<OpenFile>?,
     isSaving: Boolean,
     errorMessage: String?,
+    errorTitle: String,
     onOpenFolderClick: () -> Unit,
     onSelectProjectClick: () -> Unit,
     onInitializeProjectClick: () -> Unit,
@@ -222,12 +223,15 @@ fun MainScreen(
     if (filesPendingSave != null) {
         AlertDialog(
             onDismissRequest = { if (!isSaving) onCancelChanges() },
-            title = { Text("Unsaved Changes") },
+            title = { Text(if (errorMessage != null) errorTitle else "Unsaved Changes") },
             text = {
                 Column(
                     modifier = Modifier.heightIn(max = 280.dp).verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
+                    if (errorMessage != null) {
+                        Text(errorMessage, color = MaterialTheme.colorScheme.error)
+                    }
                     if (filesPendingSave.isEmpty()) {
                         Text("There are no unsaved changes left. Continue?")
                     } else if (filesPendingSave.size == 1) {
@@ -240,9 +244,6 @@ fun MainScreen(
                     if (isSaving) {
                         LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                         Text("Saving changes...")
-                    }
-                    if (errorMessage != null) {
-                        Text(errorMessage, color = MaterialTheme.colorScheme.error)
                     }
                 }
             },
@@ -271,8 +272,14 @@ fun MainScreen(
     } else if (errorMessage != null && !isRestoringSession) {
         AlertDialog(
             onDismissRequest = onErrorDismissed,
-            title = { Text("Action Failed") },
-            text = { Text(errorMessage) },
+            title = { Text(errorTitle) },
+            text = {
+                Text(
+                    errorMessage,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.heightIn(max = 280.dp).verticalScroll(rememberScrollState())
+                )
+            },
             confirmButton = {
                 TextButton(onClick = onErrorDismissed) { Text("OK") }
             }

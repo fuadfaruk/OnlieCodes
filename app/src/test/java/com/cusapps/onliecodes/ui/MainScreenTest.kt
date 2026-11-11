@@ -1,12 +1,17 @@
 package com.cusapps.onliecodes.ui
 
 import android.net.Uri
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import com.cusapps.onliecodes.model.OpenFile
 import com.cusapps.onliecodes.ui.theme.OnlieCodesTheme
 import org.junit.Assert.assertEquals
@@ -24,18 +29,22 @@ class MainScreenTest {
 
     private val first = OpenFile(Uri.parse("content://files/first.kt"), "first.kt", "edited", "original")
     private val second = OpenFile(Uri.parse("content://files/second.kt"), "second.kt", "edited", "original")
+    private var displayedError by mutableStateOf<String?>(null)
 
     private fun showConfirmation(
         files: List<OpenFile>,
         isSaving: Boolean = false,
         errorMessage: String? = null,
+        errorTitle: String = "Action Failed",
         onSave: () -> Unit = {},
         onDiscard: () -> Unit = {},
         onCancel: () -> Unit = {},
+        onErrorDismissed: () -> Unit = {},
         isRestoringSession: Boolean = false,
         projectName: String? = "Project",
         pendingFiles: List<OpenFile>? = files
     ) {
+        displayedError = errorMessage
         compose.setContent {
             OnlieCodesTheme {
                 MainScreen(
@@ -46,7 +55,8 @@ class MainScreenTest {
                     projectMissing = false,
                     filesPendingSave = pendingFiles,
                     isSaving = isSaving,
-                    errorMessage = errorMessage,
+                    errorMessage = displayedError,
+                    errorTitle = errorTitle,
                     onOpenFolderClick = {},
                     onSelectProjectClick = {},
                     onInitializeProjectClick = {},
@@ -60,7 +70,7 @@ class MainScreenTest {
                     onSaveChanges = onSave,
                     onDiscardChanges = onDiscard,
                     onCancelChanges = onCancel,
-                    onErrorDismissed = {},
+                    onErrorDismissed = onErrorDismissed,
                     onCreateFile = { _, _ -> },
                     onCreateFolder = { _, _ -> },
                     onDeleteFile = {},
@@ -122,11 +132,53 @@ class MainScreenTest {
     @Test
     fun failedSaveDisplaysErrorAndKeepsAllChoicesAvailable() {
         val error = "Could not save 'first.kt': Permission denied"
-        showConfirmation(listOf(first), errorMessage = error)
+        showConfirmation(listOf(first), errorMessage = error, errorTitle = "Save Failed")
 
-        compose.onNodeWithText(error).assertExists()
+        compose.onNodeWithText("Save Failed").assertIsDisplayed()
+        compose.onNodeWithText(error).assertIsDisplayed()
         compose.onNodeWithText("Save").assertIsEnabled()
         compose.onNodeWithText("Discard").assertIsEnabled()
+        compose.onNodeWithText("Cancel").assertIsEnabled()
+    }
+
+    @Test
+    fun manualSaveFailureShowsDismissibleSaveFailedDialog() {
+        var dismissals = 0
+        val error = "Could not save 'first.kt': Storage full. Your changes are still unsaved."
+        showConfirmation(
+            listOf(first),
+            errorMessage = error,
+            errorTitle = "Save Failed",
+            onErrorDismissed = { displayedError = null; dismissals++ },
+            pendingFiles = null
+        )
+
+        compose.onNodeWithText("Save Failed").assertIsDisplayed()
+        compose.onNodeWithText("Action Failed").assertDoesNotExist()
+        compose.onNodeWithText(error).assertIsDisplayed()
+        compose.onNodeWithText("first.kt *").assertExists()
+        compose.onNodeWithText("OK").performClick()
+
+        assertEquals(1, dismissals)
+        compose.onNodeWithText("Save Failed").assertDoesNotExist()
+        compose.onNodeWithText("first.kt *").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Save Current File").assertIsEnabled()
+    }
+
+    @Test
+    fun saveAllFailureIsVisibleBeforeLongPendingFileList() {
+        val files = (1..20).map { index ->
+            first.copy(uri = Uri.parse("content://files/file$index.kt"), name = "file$index.kt")
+        }
+        val error = "Could not save 'file1.kt': Permission denied"
+        showConfirmation(files, errorTitle = "Save Failed")
+        compose.onNodeWithText("file20.kt").performScrollTo().assertIsDisplayed()
+
+        compose.runOnIdle { displayedError = error }
+
+        compose.onNodeWithText("Save Failed").assertIsDisplayed()
+        compose.onNodeWithText(error).assertIsDisplayed()
+        compose.onNodeWithText("Save All").assertIsEnabled()
         compose.onNodeWithText("Cancel").assertIsEnabled()
     }
 

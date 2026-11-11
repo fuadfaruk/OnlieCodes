@@ -25,6 +25,8 @@ class EditorSession(
         private set
     var errorMessage by mutableStateOf<String?>(null)
         private set
+    var errorTitle by mutableStateOf("Action Failed")
+        private set
 
     val activeFile: OpenFile?
         get() = openFiles.find { it.uri == activeFileUri }
@@ -68,7 +70,7 @@ class EditorSession(
     fun removeFile(uri: Uri) {
         if (pendingAction == PendingAction.CloseTab(uri)) {
             pendingAction = null
-            errorMessage = null
+            dismissError()
         }
         updateFiles(openFiles.filter { it.uri != uri })
     }
@@ -84,16 +86,18 @@ class EditorSession(
     fun cancelPendingAction() {
         if (isSaving) return
         pendingAction = null
-        errorMessage = null
+        dismissError()
     }
 
     fun discardPendingChanges() {
         if (isSaving) return
+        dismissError()
         pendingAction?.let { performAction(it) }
     }
 
     fun dismissError() {
         errorMessage = null
+        errorTitle = "Action Failed"
     }
 
     fun reportError(message: String) {
@@ -119,13 +123,14 @@ class EditorSession(
         val action = pendingAction ?: return
         val saved = saveFiles(modifiedFilesFor(action))
         if (pendingAction != action) {
-            errorMessage = null
+            if (pendingAction == null) dismissError()
             return
         }
         if (saved) {
             if (modifiedFilesFor(action).isEmpty()) {
                 performAction(action)
             } else {
+                errorTitle = "Unsaved Changes"
                 errorMessage = "Some files changed while saving. Save again to continue, or choose Discard or Cancel."
             }
         }
@@ -141,7 +146,7 @@ class EditorSession(
 
     private fun requestAction(action: PendingAction) {
         if (isSaving || pendingAction != null) return
-        errorMessage = null
+        dismissError()
         if (modifiedFilesFor(action).isEmpty()) {
             performAction(action)
         } else {
@@ -151,7 +156,6 @@ class EditorSession(
 
     private fun performAction(action: PendingAction) {
         pendingAction = null
-        errorMessage = null
         when (action) {
             is PendingAction.CloseTab -> removeFile(action.uri)
             is PendingAction.SwitchProject -> {
@@ -161,6 +165,7 @@ class EditorSession(
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
+                    errorTitle = "Action Failed"
                     errorMessage = "Could not open the selected project: ${e.message ?: "Check folder access permissions."}"
                 }
             }
@@ -169,7 +174,7 @@ class EditorSession(
 
     private suspend fun saveFiles(files: List<OpenFile>): Boolean {
         isSaving = true
-        errorMessage = null
+        dismissError()
         val failures = mutableListOf<String>()
         try {
             for (file in files) {
@@ -186,10 +191,17 @@ class EditorSession(
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    failures += "Could not save '${file.name}': ${e.message ?: "Write failed."}"
+                    val reason = e.message?.takeIf { it.isNotBlank() } ?: "Write failed."
+                    failures += "Could not save '${file.name}': $reason"
                 }
             }
-            errorMessage = failures.takeIf { it.isNotEmpty() }?.joinToString("\n")
+            if (failures.isNotEmpty()) {
+                errorTitle = "Save Failed"
+                val saveError = failures.joinToString("\n") +
+                    "\n\nYour changes are still unsaved. Check file access and available storage, then try saving again."
+                // Do not erase a draft or session error reported while document IO was running.
+                errorMessage = listOfNotNull(saveError, errorMessage).joinToString("\n\n")
+            }
             return failures.isEmpty()
         } finally {
             isSaving = false

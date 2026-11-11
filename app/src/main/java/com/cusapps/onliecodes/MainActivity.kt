@@ -111,6 +111,7 @@ class MainActivity : ComponentActivity() {
                     filesPendingSave = editor.filesPendingSave,
                     isSaving = editor.isSaving,
                     errorMessage = editor.errorMessage,
+                    errorTitle = editor.errorTitle,
                     onOpenFolderClick = { openFolderPicker() },
                     onSelectProjectClick = { openFolderPicker() },
                     onInitializeProjectClick = { openFolderPicker() },
