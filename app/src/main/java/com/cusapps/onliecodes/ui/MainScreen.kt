@@ -225,8 +225,10 @@ fun MainScreen(
             onDismissRequest = { if (!isSaving) onCancelChanges() },
             title = { Text(if (errorMessage != null) errorTitle else "Unsaved Changes") },
             text = {
+                // Bring a new failure into view even if the file list was scrolled.
+                val scrollState = key(errorMessage) { rememberScrollState() }
                 Column(
-                    modifier = Modifier.heightIn(max = 280.dp).verticalScroll(rememberScrollState()),
+                    modifier = Modifier.heightIn(max = 280.dp).verticalScroll(scrollState),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     if (errorMessage != null) {
