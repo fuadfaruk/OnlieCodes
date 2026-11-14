@@ -9,6 +9,7 @@ android {
 
     defaultConfig {
         applicationId = "com.cusapps.onliecodes"
+        manifestPlaceholders["appLabel"] = "Onlie Codes"
         minSdk = 29
         targetSdk = 34
         versionCode = 1
@@ -18,6 +19,10 @@ android {
     }
 
     buildTypes {
+        debug {
+            applicationIdSuffix = ".debug"
+            manifestPlaceholders["appLabel"] = "Onlie Codes (Debug)"
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
