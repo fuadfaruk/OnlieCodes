@@ -373,21 +373,34 @@ fun MainScreen(
 
     // Dialog: Delete Confirmation
     if (showDeleteDialog) {
+        val target = dialogTargetFile
+        val hasUnsavedChanges = openFiles.any { it.uri == target?.uri && it.isModified }
         AlertDialog(
             onDismissRequest = { showDeleteDialog = false },
             title = { Text("Delete Confirmation") },
-            text = { Text("Are you sure you want to delete '${dialogTargetFile?.name}'?") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("Are you sure you want to delete '${target?.name}'?")
+                    Text(
+                        when {
+                            hasUnsavedChanges -> "This file has unsaved changes. Deleting it will permanently discard those changes and remove its recovery draft. This cannot be undone."
+                            target?.isDirectory == true -> "This will permanently delete the folder and all its contents. This cannot be undone."
+                            else -> "This will permanently delete the file and any local recovery draft. This cannot be undone."
+                        },
+                        color = if (hasUnsavedChanges) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            },
             confirmButton = {
                 Button(
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
                     onClick = {
-                        val target = dialogTargetFile
                         if (target != null) {
                             onDeleteFile(target)
                             showDeleteDialog = false
                         }
                     }
-                ) { Text("Delete") }
+                ) { Text(if (hasUnsavedChanges) "Delete and Discard" else "Delete") }
             },
             dismissButton = {
                 TextButton(onClick = { showDeleteDialog = false }) { Text("Cancel") }

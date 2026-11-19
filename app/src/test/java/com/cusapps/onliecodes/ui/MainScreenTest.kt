@@ -13,6 +13,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import com.cusapps.onliecodes.model.OpenFile
+import com.cusapps.onliecodes.model.ProjectFile
 import com.cusapps.onliecodes.ui.theme.OnlieCodesTheme
 import org.junit.Assert.assertEquals
 import org.junit.Rule
@@ -42,14 +43,16 @@ class MainScreenTest {
         onErrorDismissed: () -> Unit = {},
         isRestoringSession: Boolean = false,
         projectName: String? = "Project",
-        pendingFiles: List<OpenFile>? = files
+        pendingFiles: List<OpenFile>? = files,
+        projectFiles: List<ProjectFile> = emptyList(),
+        onDelete: (ProjectFile) -> Unit = {}
     ) {
         displayedError = errorMessage
         compose.setContent {
             OnlieCodesTheme {
                 MainScreen(
                     projectName = projectName,
-                    projectFiles = emptyList(),
+                    projectFiles = projectFiles,
                     openFiles = files,
                     activeFile = files.firstOrNull(),
                     projectMissing = false,
@@ -73,7 +76,7 @@ class MainScreenTest {
                     onErrorDismissed = onErrorDismissed,
                     onCreateFile = { _, _ -> },
                     onCreateFolder = { _, _ -> },
-                    onDeleteFile = {},
+                    onDeleteFile = onDelete,
                     onRenameFile = { _, _ -> },
                     isDarkTheme = true,
                     onToggleTheme = {},
@@ -191,6 +194,88 @@ class MainScreenTest {
         compose.onNodeWithText("Cancel").assertIsEnabled()
         compose.onNodeWithText("Save").assertDoesNotExist()
         compose.onNodeWithText("Discard").assertDoesNotExist()
+    }
+
+    private fun showDeleteConfirmation(
+        target: ProjectFile,
+        files: List<OpenFile>,
+        onDelete: (ProjectFile) -> Unit = {}
+    ) {
+        showConfirmation(files, pendingFiles = null, projectFiles = listOf(target), onDelete = onDelete)
+        compose.onNodeWithContentDescription("File Actions").performClick()
+        compose.onNodeWithText("Delete").performClick()
+    }
+
+    @Test
+    fun deletingModifiedInactiveFileWarnsBeforeExplicitlyDiscardingEditsAndDraft() {
+        val target = ProjectFile(first.name, first.uri, false)
+        val deletions = mutableListOf<ProjectFile>()
+        showDeleteConfirmation(target, listOf(second.copy(content = "original"), first), deletions::add)
+
+        compose.onNodeWithText("Are you sure you want to delete 'first.kt'?").assertIsDisplayed()
+        compose.onNodeWithText(
+            "This file has unsaved changes. Deleting it will permanently discard those changes and remove its recovery draft. This cannot be undone."
+        ).assertIsDisplayed()
+        compose.onNodeWithText("Delete").assertDoesNotExist()
+        assertEquals(emptyList<ProjectFile>(), deletions)
+
+        compose.onNodeWithText("Delete and Discard").performClick()
+
+        assertEquals(listOf(target), deletions)
+        compose.onNodeWithText("Delete Confirmation").assertDoesNotExist()
+    }
+
+    @Test
+    fun cancelingDeletionLeavesModifiedTabOpenWithoutInvokingDelete() {
+        val target = ProjectFile(first.name, first.uri, false)
+        var deletions = 0
+        showDeleteConfirmation(target, listOf(first), onDelete = { deletions++ })
+
+        compose.onNodeWithText("Delete and Discard").assertIsEnabled()
+        compose.onNodeWithText("Cancel").performClick()
+
+        assertEquals(0, deletions)
+        compose.onNodeWithText("Delete Confirmation").assertDoesNotExist()
+        compose.onNodeWithText("first.kt *").assertIsDisplayed()
+    }
+
+    @Test
+    fun deletingCleanFileDoesNotWarnAboutAnotherTabsUnsavedEdits() {
+        val target = ProjectFile(first.name, first.uri, false)
+        val deletions = mutableListOf<ProjectFile>()
+        showDeleteConfirmation(target, listOf(second, first.copy(content = "original")), deletions::add)
+
+        compose.onNodeWithText("Delete and Discard").assertDoesNotExist()
+        compose.onNodeWithText(
+            "This will permanently delete the file and any local recovery draft. This cannot be undone."
+        ).assertIsDisplayed()
+        compose.onNodeWithText("Delete").performClick()
+
+        assertEquals(listOf(target), deletions)
+    }
+
+    @Test
+    fun deletingUnopenedFileWarnsAboutDraftLossWithoutMatchingDirtyTabByName() {
+        val target = ProjectFile(first.name, second.uri, false)
+        showDeleteConfirmation(target, listOf(first))
+
+        compose.onNodeWithText("Delete and Discard").assertDoesNotExist()
+        compose.onNodeWithText(
+            "This will permanently delete the file and any local recovery draft. This cannot be undone."
+        ).assertIsDisplayed()
+        compose.onNodeWithText("Delete").assertIsEnabled()
+    }
+
+    @Test
+    fun deletingFolderWarnsThatAllContentsWillBePermanentlyDeleted() {
+        val target = ProjectFile("folder", Uri.parse("content://files/folder"), true)
+        showDeleteConfirmation(target, listOf(first))
+
+        compose.onNodeWithText(
+            "This will permanently delete the folder and all its contents. This cannot be undone."
+        ).assertIsDisplayed()
+        compose.onNodeWithText("Delete and Discard").assertDoesNotExist()
+        compose.onNodeWithText("Delete").assertIsEnabled()
     }
 
     @Test
