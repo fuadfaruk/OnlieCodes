@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.provider.DocumentsContract
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.compose.runtime.collectAsState
@@ -522,12 +523,13 @@ class MainActivity : ComponentActivity() {
 
     private fun renameFile(file: ProjectFile, newName: String) {
         val generation = projectGeneration
-        lifecycleScope.launch(Dispatchers.IO) {
-            val doc = DocumentFile.fromSingleUri(this@MainActivity, file.uri)
-            val renamed = doc?.renameTo(newName) == true
-            withContext(Dispatchers.Main) {
-                if (renamed && generation == projectGeneration) {
-                    val newUri = doc?.uri ?: file.uri
+        lifecycleScope.launch {
+            try {
+                val newUri = withContext(Dispatchers.IO) {
+                    DocumentsContract.renameDocument(contentResolver, file.uri, newName)
+                        ?: throw IOException("The document provider did not rename the file.")
+                }
+                if (generation == projectGeneration) {
                     unrestoredTabs = unrestoredTabs.map {
                         if (it.value.uri == file.uri) {
                             IndexedValue(it.index, SessionTab(newUri, newName))
@@ -538,8 +540,14 @@ class MainActivity : ComponentActivity() {
                     drafts.renameDraft(file.uri, newUri)
                     editor.renameFile(file.uri, newName, newUri)
                 }
+                refreshProjectTree()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (generation == projectGeneration) {
+                    editor.reportError("Could not rename '${file.name}': ${e.message ?: "Check file access permissions."}")
+                }
             }
-            refreshProjectTree()
         }
     }
 }

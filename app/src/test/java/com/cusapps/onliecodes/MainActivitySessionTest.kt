@@ -10,17 +10,21 @@ import android.content.pm.ProviderInfo
 import android.database.Cursor
 import android.database.MatrixCursor
 import android.net.Uri
+import android.os.Bundle
 import android.os.ParcelFileDescriptor
 import android.provider.DocumentsContract
+import androidx.lifecycle.lifecycleScope
 import com.cusapps.onliecodes.model.EditorSession
 import com.cusapps.onliecodes.model.LocalDraftStore
 import com.cusapps.onliecodes.model.LocalSessionStore
 import com.cusapps.onliecodes.model.OpenFile
+import com.cusapps.onliecodes.model.ProjectFile
 import com.cusapps.onliecodes.model.SavedSession
 import com.cusapps.onliecodes.model.SessionTab
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
@@ -270,6 +274,94 @@ class MainActivitySessionTest {
     }
 
     @Test
+    fun renamingUnopenedFileUpdatesDiskAndProjectTree() = runTest(mainDispatcher) {
+        val original = file("disposable.txt", "keep these contents")
+        sessions.write(snapshot(emptyList(), null))
+        val initial = startActivity()
+
+        renameFile(initial, ProjectFile(original.name, original.uri, false), "renamed.txt")
+
+        assertFalse(File(project, original.name).exists())
+        assertEquals(original.content, File(project, "renamed.txt").readText())
+        assertTrue(editor(initial).openFiles.isEmpty())
+        assertNull(editor(initial).errorMessage)
+        val files = ReflectionHelpers.getField<MutableStateFlow<List<ProjectFile>>>(initial.get(), "_projectFiles")
+        assertEquals(listOf(ProjectFile("renamed.txt", documentUri("renamed.txt"), false)), files.value)
+    }
+
+    @Test
+    fun renamingModifiedNestedFileMigratesTabDraftAndSessionAndSavesToNewUri() = runTest(mainDispatcher) {
+        val original = file("nested/original.kt", "original contents")
+        val other = file("other.kt", "other contents")
+        sessions.write(snapshot(listOf(original, other), original.uri))
+        drafts.write(original.uri, "unsaved draft")
+        val initial = startActivity()
+        val current = editor(initial)
+        val renamedUri = documentUri("nested/renamed.kt")
+
+        renameFile(initial, ProjectFile(original.name, original.uri, false), "renamed.kt")
+
+        assertEquals(listOf(renamedUri, other.uri), current.openFiles.map { it.uri })
+        assertEquals(OpenFile(renamedUri, "renamed.kt", "unsaved draft", original.content), current.activeFile)
+        assertNull(drafts.read(original.uri))
+        assertEquals("unsaved draft", drafts.read(renamedUri))
+        assertEquals(listOf(SessionTab(renamedUri, "renamed.kt"), SessionTab(other.uri, other.name)), sessions.read()?.tabs)
+        assertEquals(renamedUri, sessions.read()?.activeFileUri)
+        assertFalse(File(project, "nested/original.kt").exists())
+        assertEquals(original.content, File(project, "nested/renamed.kt").readText())
+        assertNull(current.errorMessage)
+
+        stopActivity(initial)
+        val recovered = editor(startActivity())
+        assertEquals(renamedUri, recovered.activeFile?.uri)
+        assertEquals("unsaved draft", recovered.activeFile?.content)
+        assertTrue(recovered.activeFile!!.isModified)
+        recovered.saveActiveFile()
+        assertEquals("unsaved draft", File(project, "nested/renamed.kt").readText())
+        assertFalse(recovered.activeFile!!.isModified)
+        assertNull(drafts.read(renamedUri))
+    }
+
+    @Test
+    fun providerRenameFailuresKeepFileTabsAndDraftsIntactUntilSuccessfulRetry() = runTest(mainDispatcher) {
+        val original = file("original.kt", "original contents")
+        val saved = snapshot(listOf(original), original.uri)
+        sessions.write(saved)
+        drafts.write(original.uri, "unsaved draft")
+        val initial = startActivity()
+        val current = editor(initial)
+        val failures = listOf(
+            UnsupportedOperationException("Rename unsupported"),
+            SecurityException("Permission denied"),
+            IOException("Provider unavailable")
+        )
+
+        for (failure in failures) {
+            provider.renameFailure = failure
+
+            renameFile(initial, ProjectFile(original.name, original.uri, false), "renamed.kt")
+
+            assertEquals("Action Failed", current.errorTitle)
+            assertTrue(current.errorMessage!!.contains("Could not rename '${original.name}'"))
+            val reason = if (failure is IOException) "did not rename the file" else failure.message!!
+            assertTrue(current.errorMessage!!.contains(reason))
+            assertEquals(OpenFile(original.uri, original.name, "unsaved draft", original.content), current.activeFile)
+            assertEquals("unsaved draft", drafts.read(original.uri))
+            assertEquals(saved, sessions.read())
+            assertEquals(original.content, File(project, original.name).readText())
+            assertFalse(File(project, "renamed.kt").exists())
+            current.dismissError()
+        }
+
+        provider.renameFailure = null
+        renameFile(initial, ProjectFile(original.name, original.uri, false), "renamed.kt")
+        assertNull(current.errorMessage)
+        assertEquals(documentUri("renamed.kt"), current.activeFile?.uri)
+        assertEquals("unsaved draft", current.activeFile?.content)
+        assertTrue(current.activeFile!!.isModified)
+    }
+
+    @Test
     fun missingOriginalRecoversEmptyDraftAndUnreadableTabsRemainIndexedForRetry() = runTest(mainDispatcher) {
         val clean = file("clean.kt", "clean")
         val missingDraft = OpenFile(documentUri("missing.kt"), "missing.kt", "old original")
@@ -393,10 +485,25 @@ class MainActivitySessionTest {
     private fun editor(controller: ActivityController<MainActivity>): EditorSession =
         ReflectionHelpers.getField(controller.get(), "editor")
 
+    private suspend fun renameFile(controller: ActivityController<MainActivity>, file: ProjectFile, name: String) {
+        ReflectionHelpers.callInstanceMethod<Unit>(
+            controller.get(), "renameFile",
+            ReflectionHelpers.ClassParameter.from(ProjectFile::class.java, file),
+            ReflectionHelpers.ClassParameter.from(String::class.java, name)
+        )
+        val scope = controller.get().lifecycleScope
+        while (true) {
+            val jobs = scope.coroutineContext[Job]!!.children.toList()
+            if (jobs.isEmpty()) return
+            jobs.forEach { it.join() }
+        }
+    }
+
     private class ProjectProvider(private val directory: File) : ContentProvider() {
         var denyReads = false
         var nullWriteStream = false
         var writeFailure: Exception? = null
+        var renameFailure: Exception? = null
 
         override fun onCreate() = true
 
@@ -419,7 +526,8 @@ class MainActivitySessionTest {
                             } else {
                                 "text/plain"
                             }
-                            DocumentsContract.Document.COLUMN_FLAGS -> DocumentsContract.Document.FLAG_SUPPORTS_WRITE
+                            DocumentsContract.Document.COLUMN_FLAGS -> DocumentsContract.Document.FLAG_SUPPORTS_WRITE or
+                                DocumentsContract.Document.FLAG_SUPPORTS_RENAME
                             DocumentsContract.Document.COLUMN_SIZE -> file.length()
                             else -> null
                         }
@@ -437,6 +545,19 @@ class MainActivitySessionTest {
             val target = documentFile(uri)
             if (!target.exists()) throw FileNotFoundException("Document unavailable")
             return ParcelFileDescriptor.open(target, ParcelFileDescriptor.parseMode(mode))
+        }
+
+        override fun call(method: String, arg: String?, extras: Bundle?): Bundle? {
+            if (method != "android:renameDocument") return super.call(method, arg, extras)
+            renameFailure?.let { throw it }
+            val uri = extras!!.getParcelable("uri", Uri::class.java)!!
+            val source = documentFile(uri)
+            val target = File(source.parentFile, extras.getString(DocumentsContract.Document.COLUMN_DISPLAY_NAME)!!)
+            if (!source.renameTo(target)) throw IllegalStateException("Rename failed")
+            val id = "project/" + target.relativeTo(directory).path.replace(File.separatorChar, '/')
+            return Bundle().apply {
+                putParcelable("uri", DocumentsContract.buildDocumentUriUsingTree(uri, id))
+            }
         }
 
         private fun documentFile(uri: Uri): File {
